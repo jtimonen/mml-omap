@@ -242,6 +242,41 @@ def epsg3067_to_wgs84(x: float, y: float) -> tuple[float, float]:
     return math.degrees(lat), math.degrees(lon)
 
 
+def wgs84_to_epsg3067(latitude_deg: float, longitude_deg: float) -> tuple[float, float]:
+    flattening = 1.0 / GRS80_INV_F
+    eccentricity_sq = flattening * (2.0 - flattening)
+    second_eccentricity_sq = eccentricity_sq / (1.0 - eccentricity_sq)
+    lat = math.radians(latitude_deg)
+    lon_delta = math.radians(longitude_deg - EPSG3067_CENTRAL_MERIDIAN_DEG)
+    n = GRS80_A / math.sqrt(1.0 - eccentricity_sq * math.sin(lat) ** 2)
+    t = math.tan(lat) ** 2
+    c = second_eccentricity_sq * math.cos(lat) ** 2
+    a = math.cos(lat) * lon_delta
+    meridian = GRS80_A * (
+        (1.0 - eccentricity_sq / 4.0 - 3.0 * eccentricity_sq**2 / 64.0 - 5.0 * eccentricity_sq**3 / 256.0) * lat
+        - (3.0 * eccentricity_sq / 8.0 + 3.0 * eccentricity_sq**2 / 32.0 + 45.0 * eccentricity_sq**3 / 1024.0)
+        * math.sin(2.0 * lat)
+        + (15.0 * eccentricity_sq**2 / 256.0 + 45.0 * eccentricity_sq**3 / 1024.0) * math.sin(4.0 * lat)
+        - (35.0 * eccentricity_sq**3 / 3072.0) * math.sin(6.0 * lat)
+    )
+    x = EPSG3067_FALSE_EASTING + EPSG3067_SCALE * n * (
+        a
+        + (1.0 - t + c) * a**3 / 6.0
+        + (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * second_eccentricity_sq) * a**5 / 120.0
+    )
+    y = EPSG3067_FALSE_NORTHING + EPSG3067_SCALE * (
+        meridian
+        + n
+        * math.tan(lat)
+        * (
+            a * a / 2.0
+            + (5.0 - t + 9.0 * c + 4.0 * c * c) * a**4 / 24.0
+            + (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * second_eccentricity_sq) * a**6 / 720.0
+        )
+    )
+    return x, y
+
+
 def meridian_convergence_deg(latitude_deg: float, longitude_deg: float) -> float:
     lat = math.radians(latitude_deg)
     lon_delta = math.radians(longitude_deg - EPSG3067_CENTRAL_MERIDIAN_DEG)

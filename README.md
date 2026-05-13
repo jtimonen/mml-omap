@@ -161,7 +161,10 @@ uv run python tools/generate_declination_heatmap.py docs/finland_nek_nak_kok_hea
 
 The generator reads `docs/finland_boundary.geojson`, a Finland feature extracted
 from the Natural Earth-derived `geo-countries` dataset. It uses matplotlib and
-numpy to draw filled contours and equal-value contour lines over the map.
+numpy to draw filled contours and equal-value contour lines over the map. The
+plot is projected to EPSG:3067 kilometers with equal x/y aspect, so the same
+length on the figure represents the same ground distance east-west and
+north-south.
 
 The requested paper rectangle is limited to A3 at 1:15000, or 6300 m x 4455 m
 in either portrait or landscape orientation. Larger rectangles error before a

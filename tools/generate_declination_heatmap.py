@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import math
 from pathlib import Path
 import re
 import sys
@@ -11,15 +10,13 @@ import matplotlib.pyplot as plt
 from matplotlib.path import Path as MplPath
 import numpy as np
 
-from mml_omap.cli import estimate_finland_magnetic_declination_wgs84, meridian_convergence_deg
+from mml_omap.cli import estimate_finland_magnetic_declination_wgs84, meridian_convergence_deg, wgs84_to_epsg3067
 
 
 LON_MIN = 19.0
 LON_MAX = 32.2
 LAT_MIN = 59.5
 LAT_MAX = 70.4
-DISPLAY_LATITUDE_DEG = 65.0
-DISPLAY_LON_SCALE = math.cos(math.radians(DISPLAY_LATITUDE_DEG))
 DATE = dt.date(2026, 1, 1)
 BOUNDARY_PATH = Path("docs/finland_boundary.geojson")
 
@@ -50,12 +47,19 @@ def load_finland_polygons() -> list[list[list[tuple[float, float]]]]:
     ]
 
 
-def display_lon(longitude_deg: float | np.ndarray) -> float | np.ndarray:
-    return (longitude_deg - LON_MIN) * DISPLAY_LON_SCALE + LON_MIN
+def project_wgs84(latitude_deg: float, longitude_deg: float) -> tuple[float, float]:
+    x, y = wgs84_to_epsg3067(latitude_deg, longitude_deg)
+    return x / 1000.0, y / 1000.0
+
+
+def project_wgs84_grid(lat_grid: np.ndarray, lon_grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    projection = np.vectorize(lambda la, lo: project_wgs84(float(la), float(lo)))
+    return projection(lat_grid, lon_grid)
 
 
 def display_ring(ring: list[tuple[float, float]]) -> tuple[list[float], list[float]]:
-    return [display_lon(point[0]) for point in ring], [point[1] for point in ring]
+    points = [project_wgs84(lat, lon) for lon, lat in ring]
+    return [point[0] for point in points], [point[1] for point in points]
 
 
 def ring_to_path(ring: list[tuple[float, float]]) -> tuple[list[tuple[float, float]], list[int]]:
@@ -108,7 +112,8 @@ def grid_values(
     nek = np.vectorize(lambda la, lo: estimate_finland_magnetic_declination_wgs84(float(la), float(lo), DATE))(lat_grid, lon_grid)
     nak = np.vectorize(lambda la, lo: meridian_convergence_deg(float(la), float(lo)))(lat_grid, lon_grid)
     mask = mask_outside_finland(lon_grid, lat_grid, polygons)
-    return display_lon(lon_grid), lat_grid, tuple(np.ma.array(values, mask=mask) for values in (nek, nak, nek + nak))
+    x_grid, y_grid = project_wgs84_grid(lat_grid, lon_grid)
+    return x_grid, y_grid, tuple(np.ma.array(values, mask=mask) for values in (nek, nak, nek + nak))
 
 
 def plot_panel(
@@ -126,12 +131,12 @@ def plot_panel(
     ax.clabel(contours, fmt="%.0f", fontsize=7, inline=True)
     draw_boundaries(ax, polygons)
     for name, lat, lon in CITY_POINTS:
-        x = display_lon(lon)
-        ax.plot(x, lat, "o", markersize=2.6, color="#ffffff", markeredgecolor="#111", markeredgewidth=0.75, zorder=6)
+        x, y = project_wgs84(lat, lon)
+        ax.plot(x, y, "o", markersize=2.6, color="#ffffff", markeredgecolor="#111", markeredgewidth=0.75, zorder=6)
         if title.startswith("NEK"):
             ax.text(
                 x + 0.05,
-                lat + 0.07,
+                y + 8.0,
                 name,
                 fontsize=6.5,
                 color="#111",
@@ -139,18 +144,20 @@ def plot_panel(
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "boxstyle": "round,pad=0.12"},
             )
     ax.set_title(title, fontsize=12, weight="semibold")
-    ax.set_xlim(display_lon(LON_MIN), display_lon(LON_MAX))
-    ax.set_ylim(LAT_MIN, LAT_MAX)
+    x_min, y_min = project_wgs84(LAT_MIN, LON_MIN)
+    x_max, y_max = project_wgs84(LAT_MAX, LON_MAX)
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xticks([display_lon(lon) for lon in [20, 24, 28, 32]])
-    ax.set_xticklabels(["20E", "24E", "28E", "32E"])
-    ax.set_yticks([60, 64, 68])
-    ax.set_yticklabels(["60N", "64N", "68N"])
+    ax.set_xticks([200, 400, 600, 800])
+    ax.set_xticklabels(["200", "400", "600", "800"])
+    ax.set_yticks([6700, 7100, 7500])
+    ax.set_yticklabels(["6700", "7100", "7500"])
     ax.grid(color="#d0d0d0", linewidth=0.4, alpha=0.6)
     ax.tick_params(labelsize=7)
-    ax.set_xlabel("longitude, scaled by cos(65N)", fontsize=8)
+    ax.set_xlabel("EPSG:3067 easting (km)", fontsize=8)
     if title.startswith("NEK"):
-        ax.set_ylabel("latitude", fontsize=8)
+        ax.set_ylabel("EPSG:3067 northing (km)", fontsize=8)
     return filled
 
 

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mml-geojson"
+version = "0.1.0"
+description = "Download Maanmittauslaitos open topographic data by bbox and convert it to GeoJSON."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "mml-geojson contributors" }
+]
+keywords = ["geojson", "geopackage", "maanmittauslaitos", "mml", "ogc-api-processes", "finland"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: GIS",
+]
+
+[project.scripts]
+mml-geojson = "mml_geojson.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mml_geojson"]

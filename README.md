@@ -1,7 +1,7 @@
-# mml-geojson
+# mml-omap
 
-Download Maanmittauslaitos open topographic data by bounding box and convert it
-to GeoJSON.
+Generate orienteering-oriented map data and map previews from
+Maanmittauslaitos open topographic data.
 
 The tool is intentionally small:
 
@@ -39,7 +39,7 @@ python3 -m pip install .
 Or run without installing:
 
 ```sh
-python3 -m mml_geojson.cli --help
+python3 -m mml_omap.cli --help
 ```
 
 ## API Key
@@ -59,7 +59,7 @@ history.
 Bounding boxes are `min_x,min_y,max_x,max_y` in EPSG:3067 meters:
 
 ```sh
-mml-geojson generate output.geojson \
+mml-omap generate output.geojson \
   --bbox 385396,6672568,389620,6677160
 ```
 
@@ -69,14 +69,14 @@ with `--work-dir`.
 ## Download Only
 
 ```sh
-mml-geojson download mml_area.zip \
+mml-omap download mml_area.zip \
   --bbox 385396,6672568,389620,6677160
 ```
 
 ## Convert An Existing GeoPackage
 
 ```sh
-mml-geojson convert-gpkg maastotietokanta.gpkg output.geojson \
+mml-omap convert-gpkg maastotietokanta.gpkg output.geojson \
   --bbox 385396,6672568,389620,6677160
 ```
 
@@ -85,26 +85,26 @@ mml-geojson convert-gpkg maastotietokanta.gpkg output.geojson \
 Render SVG:
 
 ```sh
-mml-geojson render-svg output.geojson map.svg
+mml-omap render-svg output.geojson map.svg
 ```
 
 Render PNG:
 
 ```sh
-mml-geojson render-png output.geojson map.png --dpi 300
+mml-omap render-png output.geojson map.png --dpi 300
 ```
 
 Render PDF:
 
 ```sh
-mml-geojson render-pdf output.geojson map.pdf
+mml-omap render-pdf output.geojson map.pdf
 ```
 
 Rendering uses the GeoJSON extent by default. Pass `--bbox` to force the map
 frame:
 
 ```sh
-mml-geojson render-pdf output.geojson map.pdf \
+mml-omap render-pdf output.geojson map.pdf \
   --bbox 385396,6672568,389620,6677160 \
   --scale 10000 \
   --margin-mm 5
@@ -149,7 +149,7 @@ Override or extend mappings with JSON:
 Use it with:
 
 ```sh
-mml-geojson convert-gpkg maastotietokanta.gpkg output.geojson \
+mml-omap convert-gpkg maastotietokanta.gpkg output.geojson \
   --mapping mml_mapping.json
 ```
 

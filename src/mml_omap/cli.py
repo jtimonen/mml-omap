@@ -267,7 +267,7 @@ def convert_gpkg_to_geojson(
                 features.append({"type": "Feature", "properties": properties, "geometry": geometry})
     return {
         "type": "FeatureCollection",
-        "name": "mml-geojson",
+        "name": "mml-omap",
         "crs": {"type": "name", "properties": {"name": "EPSG:3067"}},
         "features": features,
     }

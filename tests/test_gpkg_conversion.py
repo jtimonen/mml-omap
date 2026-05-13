@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mml_geojson.cli import DEFAULT_TABLE_RULES, convert_gpkg_to_geojson
+from mml_omap.cli import DEFAULT_TABLE_RULES, convert_gpkg_to_geojson
 
 
 def make_gpkg(path: Path) -> None:

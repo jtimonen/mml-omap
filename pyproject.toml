@@ -3,16 +3,16 @@ requires = ["hatchling>=1.21"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mml-geojson"
+name = "mml-omap"
 version = "0.1.0"
-description = "Download Maanmittauslaitos open topographic data by bbox and convert it to GeoJSON."
+description = "Generate orienteering-oriented maps from Maanmittauslaitos open topographic data."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-  { name = "mml-geojson contributors" }
+  { name = "mml-omap contributors" }
 ]
-keywords = ["geojson", "geopackage", "maanmittauslaitos", "mml", "ogc-api-processes", "finland"]
+keywords = ["geojson", "geopackage", "maanmittauslaitos", "mml", "orienteering", "maps", "finland"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -27,7 +27,7 @@ classifiers = [
 ]
 
 [project.scripts]
-mml-geojson = "mml_geojson.cli:main"
+mml-omap = "mml_omap.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mml_geojson"]
+packages = ["src/mml_omap"]

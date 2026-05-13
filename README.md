@@ -9,7 +9,8 @@ The tool is intentionally small:
 - Submits `maastotietokanta_bbox` jobs.
 - Downloads the returned GeoPackage package.
 - Converts selected GeoPackage feature tables to GeoJSON.
-- Adds optional `symbol` and `object_type` properties for downstream map tools.
+- Adds optional `symbol` and `object_type` properties.
+- Renders GeoJSON to SVG, PNG, or PDF.
 - Uses only the Python standard library.
 
 Coordinates are ETRS-TM35FIN / EPSG:3067 meters, matching the native MML file
@@ -79,6 +80,36 @@ mml-geojson convert-gpkg maastotietokanta.gpkg output.geojson \
   --bbox 385396,6672568,389620,6677160
 ```
 
+## Render GeoJSON
+
+Render SVG:
+
+```sh
+mml-geojson render-svg output.geojson map.svg
+```
+
+Render PNG:
+
+```sh
+mml-geojson render-png output.geojson map.png --dpi 300
+```
+
+Render PDF:
+
+```sh
+mml-geojson render-pdf output.geojson map.pdf
+```
+
+Rendering uses the GeoJSON extent by default. Pass `--bbox` to force the map
+frame:
+
+```sh
+mml-geojson render-pdf output.geojson map.pdf \
+  --bbox 385396,6672568,389620,6677160 \
+  --scale 10000 \
+  --margin-mm 5
+```
+
 ## Mapping
 
 The default mapping is conservative:
@@ -124,9 +155,8 @@ mml-geojson convert-gpkg maastotietokanta.gpkg output.geojson \
 
 ## Notes
 
-The output is public interchange data, not an OCAD or OpenOrienteering Mapper
-project. Use GeoJSON-capable GIS tools or a downstream map generator to render
-or convert it further.
+The GeoJSON output is public interchange data, not a proprietary map project.
+Use GeoJSON-capable GIS tools or the built-in render commands to inspect it.
 
 Maanmittauslaitos data licensing and attribution requirements still apply to
 the downloaded data.

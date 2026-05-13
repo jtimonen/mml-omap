@@ -1,8 +1,7 @@
 """Command line interface for exporting MML open data to GeoJSON.
 
 The primary output is GeoJSON in EPSG:3067 coordinates. When the default mapping
-is enabled, features also get `symbol` and `object_type` properties that make the
-output convenient for downstream map generators.
+is enabled, features also get `symbol` and `object_type` properties.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +68,29 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "rakennus": {"object_type": "area", "symbol": "building"},
     "kivi": {"object_type": "point", "symbol": "mapped_rock"},
 }
+
+SYMBOL_STYLES = {
+    "contour": {"stroke": "#9b5a28", "stroke_width_mm": 0.14, "fill": "none"},
+    "index_contour": {"stroke": "#9b5a28", "stroke_width_mm": 0.25, "fill": "none"},
+    "form_line": {"stroke": "#9b5a28", "stroke_width_mm": 0.10, "fill": "none", "dasharray": "1.0 0.5"},
+    "depression_contour": {"stroke": "#9b5a28", "stroke_width_mm": 0.14, "fill": "none"},
+    "path": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none", "dasharray": "1.0 0.7"},
+    "road": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
+    "stream": {"stroke": "#008fd5", "stroke_width_mm": 0.18, "fill": "none"},
+    "river": {"stroke": "#008fd5", "stroke_width_mm": 0.35, "fill": "none"},
+    "cliff": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
+    "fence": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none"},
+    "lake": {"stroke": "#008fd5", "stroke_width_mm": 0.10, "fill": "#b9e3f7"},
+    "swamp": {"stroke": "#008fd5", "stroke_width_mm": 0.10, "fill": "#d8f0e8"},
+    "field": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#f2c84b"},
+    "thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#49a64a"},
+    "very_thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#16702f"},
+    "open_rock": {"stroke": "#777777", "stroke_width_mm": 0.08, "fill": "#d9d9d9"},
+    "building": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#222222"},
+    "mapped_rock": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#000000"},
+}
+
+DEFAULT_STYLE = {"stroke": "#444444", "stroke_width_mm": 0.18, "fill": "none"}
 
 
 def read_json(path: Path) -> Any:
@@ -416,6 +439,387 @@ def collect_xy(raw: Any, xs: list[float], ys: list[float]) -> None:
             collect_xy(item, xs, ys)
 
 
+def geojson_features(geojson: dict[str, Any]) -> list[dict[str, Any]]:
+    if geojson.get("type") == "FeatureCollection":
+        features = geojson.get("features")
+        if not isinstance(features, list):
+            raise ValueError("FeatureCollection.features must be an array")
+        return [feature for feature in features if isinstance(feature, dict)]
+    if geojson.get("type") == "Feature":
+        return [geojson]
+    raise ValueError("Input must be a GeoJSON FeatureCollection or Feature")
+
+
+def geojson_bbox(geojson: dict[str, Any], raw_bbox: str | None = None) -> list[float]:
+    if raw_bbox:
+        return parse_bbox(raw_bbox)
+    xs: list[float] = []
+    ys: list[float] = []
+    for feature in geojson_features(geojson):
+        geometry = feature.get("geometry") or {}
+        collect_xy(geometry.get("coordinates"), xs, ys)
+    if not xs or not ys:
+        raise ValueError("GeoJSON contains no coordinates and --bbox was not provided")
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+class RenderTransform:
+    def __init__(self, bbox: list[float], scale: int, margin_mm: float) -> None:
+        self.min_x, self.min_y, self.max_x, self.max_y = bbox
+        self.scale = max(int(scale), 1)
+        self.margin_mm = max(float(margin_mm), 0.0)
+        self.width_m = max(self.max_x - self.min_x, 0.001)
+        self.height_m = max(self.max_y - self.min_y, 0.001)
+        self.map_width_mm = self.width_m * 1000.0 / self.scale
+        self.map_height_mm = self.height_m * 1000.0 / self.scale
+        self.page_width_mm = self.map_width_mm + self.margin_mm * 2.0
+        self.page_height_mm = self.map_height_mm + self.margin_mm * 2.0
+
+    def to_mm(self, coordinate: Any) -> tuple[float, float]:
+        if not isinstance(coordinate, (list, tuple)) or len(coordinate) < 2:
+            raise ValueError(f"Invalid coordinate: {coordinate!r}")
+        x = self.margin_mm + (float(coordinate[0]) - self.min_x) * 1000.0 / self.scale
+        y = self.margin_mm + (self.max_y - float(coordinate[1])) * 1000.0 / self.scale
+        return x, y
+
+
+def feature_symbol(feature: dict[str, Any]) -> str:
+    properties = feature.get("properties") or {}
+    return str(properties.get("symbol", properties.get("source_table", "unknown")))
+
+
+def feature_style(feature: dict[str, Any]) -> dict[str, Any]:
+    return SYMBOL_STYLES.get(feature_symbol(feature), DEFAULT_STYLE)
+
+
+def iter_geometry_parts(geometry: dict[str, Any]) -> list[dict[str, Any]]:
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    if geometry_type in {"Point", "LineString", "Polygon"}:
+        return [{"type": geometry_type, "coordinates": coordinates}]
+    if geometry_type == "MultiPoint":
+        return [{"type": "Point", "coordinates": point} for point in coordinates or []]
+    if geometry_type == "MultiLineString":
+        return [{"type": "LineString", "coordinates": line} for line in coordinates or []]
+    if geometry_type == "MultiPolygon":
+        return [{"type": "Polygon", "coordinates": polygon} for polygon in coordinates or []]
+    return []
+
+
+def svg_path_for_ring(ring: list[Any], transform: RenderTransform) -> str:
+    if not ring:
+        return ""
+    commands = []
+    first_x, first_y = transform.to_mm(ring[0])
+    commands.append(f"M {first_x:.3f} {first_y:.3f}")
+    for coordinate in ring[1:]:
+        x, y = transform.to_mm(coordinate)
+        commands.append(f"L {x:.3f} {y:.3f}")
+    commands.append("Z")
+    return " ".join(commands)
+
+
+def svg_path_for_line(line: list[Any], transform: RenderTransform) -> str:
+    if not line:
+        return ""
+    first_x, first_y = transform.to_mm(line[0])
+    commands = [f"M {first_x:.3f} {first_y:.3f}"]
+    for coordinate in line[1:]:
+        x, y = transform.to_mm(coordinate)
+        commands.append(f"L {x:.3f} {y:.3f}")
+    return " ".join(commands)
+
+
+def render_svg(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform) -> None:
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="{transform.page_width_mm:.3f}mm" height="{transform.page_height_mm:.3f}mm" '
+            f'viewBox="0 0 {transform.page_width_mm:.3f} {transform.page_height_mm:.3f}">'
+        ),
+        '<rect x="0" y="0" width="100%" height="100%" fill="#ffffff"/>',
+    ]
+    for feature in geojson_features(geojson):
+        style = feature_style(feature)
+        stroke = style.get("stroke", "none")
+        fill = style.get("fill", "none")
+        stroke_width = float(style.get("stroke_width_mm", 0.18))
+        dasharray = style.get("dasharray")
+        dash_attr = f' stroke-dasharray="{dasharray}"' if dasharray else ""
+        for part in iter_geometry_parts(feature.get("geometry") or {}):
+            if part["type"] == "Polygon":
+                path = " ".join(svg_path_for_ring(ring, transform) for ring in part.get("coordinates") or [])
+                lines.append(
+                    f'<path d="{path}" stroke="{stroke}" fill="{fill}" '
+                    f'stroke-width="{stroke_width:.3f}" fill-rule="evenodd"{dash_attr}/>'
+                )
+            elif part["type"] == "LineString":
+                path = svg_path_for_line(part.get("coordinates") or [], transform)
+                lines.append(
+                    f'<path d="{path}" stroke="{stroke}" fill="none" '
+                    f'stroke-width="{stroke_width:.3f}" stroke-linecap="round" '
+                    f'stroke-linejoin="round"{dash_attr}/>'
+                )
+            elif part["type"] == "Point":
+                x, y = transform.to_mm(part.get("coordinates"))
+                radius = max(stroke_width * 2.0, 0.35)
+                point_fill = fill if fill != "none" else stroke
+                lines.append(f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{radius:.3f}" fill="{point_fill}"/>')
+    lines.append("</svg>")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def color_to_rgb(raw: str) -> tuple[int, int, int] | None:
+    if raw == "none":
+        return None
+    value = raw.lstrip("#")
+    if len(value) != 6:
+        return None
+    return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+
+
+def make_canvas(width: int, height: int) -> bytearray:
+    return bytearray([255, 255, 255, 255]) * width * height
+
+
+def set_pixel(canvas: bytearray, width: int, height: int, x: int, y: int, color: tuple[int, int, int]) -> None:
+    if x < 0 or y < 0 or x >= width or y >= height:
+        return
+    index = (y * width + x) * 4
+    canvas[index:index + 4] = bytes([color[0], color[1], color[2], 255])
+
+
+def draw_line(
+    canvas: bytearray,
+    width: int,
+    height: int,
+    a: tuple[int, int],
+    b: tuple[int, int],
+    color: tuple[int, int, int],
+    stroke_px: int,
+) -> None:
+    x0, y0 = a
+    x1, y1 = b
+    dx = abs(x1 - x0)
+    dy = -abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx + dy
+    radius = max(stroke_px // 2, 0)
+    while True:
+        for oy in range(-radius, radius + 1):
+            for ox in range(-radius, radius + 1):
+                set_pixel(canvas, width, height, x0 + ox, y0 + oy, color)
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x0 += sx
+        if e2 <= dx:
+            err += dx
+            y0 += sy
+
+
+def point_in_polygon(x: float, y: float, ring: list[tuple[int, int]]) -> bool:
+    inside = False
+    j = len(ring) - 1
+    for i, point in enumerate(ring):
+        xi, yi = point
+        xj, yj = ring[j]
+        if ((yi > y) != (yj > y)) and x < (xj - xi) * (y - yi) / max(yj - yi, 0.000001) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def fill_polygon(
+    canvas: bytearray,
+    width: int,
+    height: int,
+    rings: list[list[tuple[int, int]]],
+    color: tuple[int, int, int],
+) -> None:
+    if not rings or not rings[0]:
+        return
+    xs = [point[0] for ring in rings for point in ring]
+    ys = [point[1] for ring in rings for point in ring]
+    min_x = max(min(xs), 0)
+    max_x = min(max(xs), width - 1)
+    min_y = max(min(ys), 0)
+    max_y = min(max(ys), height - 1)
+    for y in range(min_y, max_y + 1):
+        for x in range(min_x, max_x + 1):
+            if point_in_polygon(x + 0.5, y + 0.5, rings[0]) and not any(
+                point_in_polygon(x + 0.5, y + 0.5, hole) for hole in rings[1:]
+            ):
+                set_pixel(canvas, width, height, x, y, color)
+
+
+def draw_circle(
+    canvas: bytearray,
+    width: int,
+    height: int,
+    center: tuple[int, int],
+    radius: int,
+    color: tuple[int, int, int],
+) -> None:
+    cx, cy = center
+    radius = max(radius, 1)
+    r2 = radius * radius
+    for y in range(cy - radius, cy + radius + 1):
+        for x in range(cx - radius, cx + radius + 1):
+            if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2:
+                set_pixel(canvas, width, height, x, y, color)
+
+
+def write_png(path: Path, width: int, height: int, pixels: bytearray) -> None:
+    raw = bytearray()
+    stride = width * 4
+    for y in range(height):
+        raw.append(0)
+        raw.extend(pixels[y * stride:(y + 1) * stride])
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            len(data).to_bytes(4, "big")
+            + kind
+            + data
+            + zlib.crc32(kind + data).to_bytes(4, "big")
+        )
+
+    png = bytearray(b"\x89PNG\r\n\x1a\n")
+    png.extend(chunk(b"IHDR", width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 6, 0, 0, 0])))
+    png.extend(chunk(b"IDAT", zlib.compress(bytes(raw), 9)))
+    png.extend(chunk(b"IEND", b""))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(png))
+
+
+def render_png(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform, dpi: int) -> None:
+    width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
+    height = max(1, int(round(transform.page_height_mm / 25.4 * dpi)))
+    px_per_mm = dpi / 25.4
+    canvas = make_canvas(width, height)
+
+    def to_px(coordinate: Any) -> tuple[int, int]:
+        x, y = transform.to_mm(coordinate)
+        return int(round(x * px_per_mm)), int(round(y * px_per_mm))
+
+    for feature in geojson_features(geojson):
+        style = feature_style(feature)
+        stroke = color_to_rgb(str(style.get("stroke", "none")))
+        fill = color_to_rgb(str(style.get("fill", "none")))
+        stroke_px = max(1, int(round(float(style.get("stroke_width_mm", 0.18)) * px_per_mm)))
+        for part in iter_geometry_parts(feature.get("geometry") or {}):
+            if part["type"] == "Polygon":
+                rings = [[to_px(point) for point in ring] for ring in part.get("coordinates") or []]
+                if fill:
+                    fill_polygon(canvas, width, height, rings, fill)
+                if stroke:
+                    for ring in rings:
+                        for a, b in zip(ring, ring[1:] + ring[:1]):
+                            draw_line(canvas, width, height, a, b, stroke, stroke_px)
+            elif part["type"] == "LineString" and stroke:
+                points = [to_px(point) for point in part.get("coordinates") or []]
+                for a, b in zip(points, points[1:]):
+                    draw_line(canvas, width, height, a, b, stroke, stroke_px)
+            elif part["type"] == "Point":
+                color = fill or stroke or (0, 0, 0)
+                draw_circle(canvas, width, height, to_px(part.get("coordinates")), max(2, stroke_px * 2), color)
+    write_png(output_path, width, height, canvas)
+
+
+def pdf_color_operator(color: tuple[int, int, int], stroke: bool) -> str:
+    values = " ".join(f"{channel / 255.0:.4f}" for channel in color)
+    return values + (" RG" if stroke else " rg")
+
+
+def pdf_point(transform: RenderTransform, coordinate: Any) -> tuple[float, float]:
+    x_mm, y_mm = transform.to_mm(coordinate)
+    scale = 72.0 / 25.4
+    return x_mm * scale, (transform.page_height_mm - y_mm) * scale
+
+
+def render_pdf(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform) -> None:
+    page_width = transform.page_width_mm * 72.0 / 25.4
+    page_height = transform.page_height_mm * 72.0 / 25.4
+    commands = ["1 1 1 rg", f"0 0 {page_width:.3f} {page_height:.3f} re", "f"]
+    for feature in geojson_features(geojson):
+        style = feature_style(feature)
+        stroke = color_to_rgb(str(style.get("stroke", "none")))
+        fill = color_to_rgb(str(style.get("fill", "none")))
+        stroke_width = float(style.get("stroke_width_mm", 0.18)) * 72.0 / 25.4
+        for part in iter_geometry_parts(feature.get("geometry") or {}):
+            if part["type"] == "Polygon":
+                if fill:
+                    commands.append(pdf_color_operator(fill, stroke=False))
+                if stroke:
+                    commands.append(pdf_color_operator(stroke, stroke=True))
+                    commands.append(f"{stroke_width:.3f} w")
+                for ring in part.get("coordinates") or []:
+                    if not ring:
+                        continue
+                    x, y = pdf_point(transform, ring[0])
+                    commands.append(f"{x:.3f} {y:.3f} m")
+                    for coordinate in ring[1:]:
+                        x, y = pdf_point(transform, coordinate)
+                        commands.append(f"{x:.3f} {y:.3f} l")
+                    commands.append("h")
+                commands.append("B" if fill and stroke else ("f" if fill else "S"))
+            elif part["type"] == "LineString" and stroke:
+                line = part.get("coordinates") or []
+                if len(line) < 2:
+                    continue
+                commands.append(pdf_color_operator(stroke, stroke=True))
+                commands.append(f"{stroke_width:.3f} w")
+                x, y = pdf_point(transform, line[0])
+                commands.append(f"{x:.3f} {y:.3f} m")
+                for coordinate in line[1:]:
+                    x, y = pdf_point(transform, coordinate)
+                    commands.append(f"{x:.3f} {y:.3f} l")
+                commands.append("S")
+            elif part["type"] == "Point":
+                color = fill or stroke or (0, 0, 0)
+                commands.append(pdf_color_operator(color, stroke=False))
+                x, y = pdf_point(transform, part.get("coordinates"))
+                radius = max(stroke_width * 2.0, 1.0)
+                commands.append(f"{x - radius:.3f} {y - radius:.3f} {radius * 2:.3f} {radius * 2:.3f} re")
+                commands.append("f")
+    content = ("\n".join(commands) + "\n").encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.3f} {page_height:.3f}] "
+            f"/Contents 4 0 R >>"
+        ).encode("ascii"),
+        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"endstream",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output.extend(f"{index} 0 obj\n".encode("ascii"))
+        output.extend(obj)
+        output.extend(b"\nendobj\n")
+    xref_offset = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    output.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(bytes(output))
+
+
 def command_download(args: argparse.Namespace) -> int:
     api_key = args.api_key or os.environ.get(args.api_key_env)
     if not api_key:
@@ -475,10 +879,30 @@ def command_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def make_render_transform(args: argparse.Namespace, geojson: dict[str, Any]) -> RenderTransform:
+    return RenderTransform(geojson_bbox(geojson, args.bbox), scale=args.scale, margin_mm=args.margin_mm)
+
+
+def command_render_svg(args: argparse.Namespace) -> int:
+    geojson = read_json(Path(args.input))
+    render_svg(geojson, Path(args.output), transform=make_render_transform(args, geojson))
+    return 0
+
+
+def command_render_png(args: argparse.Namespace) -> int:
+    geojson = read_json(Path(args.input))
+    render_png(geojson, Path(args.output), transform=make_render_transform(args, geojson), dpi=args.dpi)
+    return 0
+
+
+def command_render_pdf(args: argparse.Namespace) -> int:
+    geojson = read_json(Path(args.input))
+    render_pdf(geojson, Path(args.output), transform=make_render_transform(args, geojson))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Create symbolized GeoJSON from Maanmittauslaitos open data."
-    )
+    parser = argparse.ArgumentParser(description="Create and render GeoJSON from Maanmittauslaitos open data.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     common_api = argparse.ArgumentParser(add_help=False)
@@ -514,6 +938,23 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--mapping", help="JSON table mapping overrides")
     generate.add_argument("--include-unmapped", action="store_true")
     generate.set_defaults(func=command_generate)
+
+    common_render = argparse.ArgumentParser(add_help=False)
+    common_render.add_argument("input", help="Input GeoJSON")
+    common_render.add_argument("output")
+    common_render.add_argument("--bbox", help="Optional render bounds as min_x,min_y,max_x,max_y")
+    common_render.add_argument("--scale", type=int, default=10000)
+    common_render.add_argument("--margin-mm", type=float, default=5.0)
+
+    render_svg_parser = subparsers.add_parser("render-svg", parents=[common_render], help="Render GeoJSON to SVG.")
+    render_svg_parser.set_defaults(func=command_render_svg)
+
+    render_png_parser = subparsers.add_parser("render-png", parents=[common_render], help="Render GeoJSON to PNG.")
+    render_png_parser.add_argument("--dpi", type=int, default=300)
+    render_png_parser.set_defaults(func=command_render_png)
+
+    render_pdf_parser = subparsers.add_parser("render-pdf", parents=[common_render], help="Render GeoJSON to PDF.")
+    render_pdf_parser.set_defaults(func=command_render_pdf)
 
     return parser
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -17,6 +18,8 @@ LON_MIN = 19.0
 LON_MAX = 32.2
 LAT_MIN = 59.5
 LAT_MAX = 70.4
+DISPLAY_LATITUDE_DEG = 65.0
+DISPLAY_LON_SCALE = math.cos(math.radians(DISPLAY_LATITUDE_DEG))
 DATE = dt.date(2026, 1, 1)
 BOUNDARY_PATH = Path("docs/finland_boundary.geojson")
 
@@ -45,6 +48,14 @@ def load_finland_polygons() -> list[list[list[tuple[float, float]]]]:
         [[(float(lon), float(lat)) for lon, lat in ring] for ring in polygon]
         for polygon in raw_polygons
     ]
+
+
+def display_lon(longitude_deg: float | np.ndarray) -> float | np.ndarray:
+    return (longitude_deg - LON_MIN) * DISPLAY_LON_SCALE + LON_MIN
+
+
+def display_ring(ring: list[tuple[float, float]]) -> tuple[list[float], list[float]]:
+    return [display_lon(point[0]) for point in ring], [point[1] for point in ring]
 
 
 def ring_to_path(ring: list[tuple[float, float]]) -> tuple[list[tuple[float, float]], list[int]]:
@@ -84,9 +95,8 @@ def mask_outside_finland(
 def draw_boundaries(ax: plt.Axes, polygons: list[list[list[tuple[float, float]]]]) -> None:
     for polygon in polygons:
         for ring_index, ring in enumerate(polygon):
-            lon = [point[0] for point in ring]
-            lat = [point[1] for point in ring]
-            ax.plot(lon, lat, color="#171717", linewidth=1.0 if ring_index == 0 else 0.55, zorder=5)
+            x, lat = display_ring(ring)
+            ax.plot(x, lat, color="#171717", linewidth=1.0 if ring_index == 0 else 0.55, zorder=5)
 
 
 def grid_values(
@@ -98,7 +108,7 @@ def grid_values(
     nek = np.vectorize(lambda la, lo: estimate_finland_magnetic_declination_wgs84(float(la), float(lo), DATE))(lat_grid, lon_grid)
     nak = np.vectorize(lambda la, lo: meridian_convergence_deg(float(la), float(lo)))(lat_grid, lon_grid)
     mask = mask_outside_finland(lon_grid, lat_grid, polygons)
-    return lon_grid, lat_grid, tuple(np.ma.array(values, mask=mask) for values in (nek, nak, nek + nak))
+    return display_lon(lon_grid), lat_grid, tuple(np.ma.array(values, mask=mask) for values in (nek, nak, nek + nak))
 
 
 def plot_panel(
@@ -116,18 +126,29 @@ def plot_panel(
     ax.clabel(contours, fmt="%.0f", fontsize=7, inline=True)
     draw_boundaries(ax, polygons)
     for name, lat, lon in CITY_POINTS:
-        ax.plot(lon, lat, "o", markersize=2.4, color="#111", zorder=6)
+        x = display_lon(lon)
+        ax.plot(x, lat, "o", markersize=2.6, color="#ffffff", markeredgecolor="#111", markeredgewidth=0.75, zorder=6)
         if title.startswith("NEK"):
-            ax.text(lon + 0.08, lat + 0.07, name, fontsize=6.5, color="#111", zorder=7)
+            ax.text(
+                x + 0.05,
+                lat + 0.07,
+                name,
+                fontsize=6.5,
+                color="#111",
+                zorder=7,
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "boxstyle": "round,pad=0.12"},
+            )
     ax.set_title(title, fontsize=12, weight="semibold")
-    ax.set_xlim(LON_MIN, LON_MAX)
+    ax.set_xlim(display_lon(LON_MIN), display_lon(LON_MAX))
     ax.set_ylim(LAT_MIN, LAT_MAX)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xticks([20, 24, 28, 32])
+    ax.set_xticks([display_lon(lon) for lon in [20, 24, 28, 32]])
+    ax.set_xticklabels(["20E", "24E", "28E", "32E"])
     ax.set_yticks([60, 64, 68])
+    ax.set_yticklabels(["60N", "64N", "68N"])
     ax.grid(color="#d0d0d0", linewidth=0.4, alpha=0.6)
     ax.tick_params(labelsize=7)
-    ax.set_xlabel("longitude", fontsize=8)
+    ax.set_xlabel("longitude, scaled by cos(65N)", fontsize=8)
     if title.startswith("NEK"):
         ax.set_ylabel("latitude", fontsize=8)
     return filled

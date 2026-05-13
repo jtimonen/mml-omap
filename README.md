@@ -71,10 +71,16 @@ MML's `boundingBoxInput` is an axis-aligned rectangle in EPSG:3067 coordinates.
 That is not the same thing as the rectangle printed on an orienteering map when
 the map is oriented to magnetic north.
 
-In `mml-omap`, `--bbox` is treated as the intended paper map frame. If you pass
-`--magnetic-declination-deg`, the tool expands the MML download request to the
-smallest EPSG:3067 bbox that contains that rotated paper frame, then renders the
-paper frame with magnetic north pointing up.
+In `mml-omap`, `--bbox` is treated as the intended paper map frame. The tool
+estimates magnetic declination from the map center and date by default, expands
+the MML download request to the smallest EPSG:3067 bbox that contains that
+rotated paper frame, clips output geometry back to the rotated frame, then
+renders the paper frame with magnetic north pointing up.
+
+Automatic declination is a lightweight Finland-only estimate. Pass
+`--magnetic-declination-deg 10.5` when you want to use an authoritative value.
+Use `--magnetic-date YYYY-MM-DD` to calculate automatic declination for a
+specific date; otherwise the current date is used.
 
 The requested paper rectangle is limited to A3 at 1:15000, or 6300 m x 4455 m
 in either portrait or landscape orientation. Larger rectangles error before a
@@ -148,8 +154,10 @@ mml-omap generate output.geojson \
   --bbox 385396,6672568,389620,6677160
 ```
 
-For a magnetic-north-oriented paper frame, pass local declination in degrees.
-Positive values mean magnetic north is east of EPSG:3067/grid north:
+Magnetic declination is automatic by default. The generated GeoJSON is clipped
+to the rotated paper frame, while the MML request uses the enclosing EPSG:3067
+bbox. To override the estimate, pass a local declination in degrees. Positive
+values mean magnetic north is east of EPSG:3067/grid north:
 
 ```sh
 mml-omap generate output.geojson \
@@ -157,8 +165,21 @@ mml-omap generate output.geojson \
   --magnetic-declination-deg 10.5
 ```
 
+To use the automatic estimate for a specific date:
+
+```sh
+mml-omap generate output.geojson \
+  --bbox 385396,6672568,389620,6677160 \
+  --magnetic-date 2026-05-13
+```
+
 By default, temporary downloads are kept under `builds/mml_downloads`. Override
 with `--work-dir`.
+
+Generated and converted GeoJSON files include a `map_frame` member when `--bbox`
+is used. Render commands reuse that frame automatically, so the exact clipped
+paper rectangle and magnetic declination do not need to be retyped unless you
+want to override them.
 
 ## Download Only
 
@@ -167,8 +188,8 @@ mml-omap download mml_area.zip \
   --bbox 385396,6672568,389620,6677160
 ```
 
-With `--magnetic-declination-deg`, this command downloads the enclosing MML bbox
-for the rotated paper frame.
+This command downloads the enclosing MML bbox for the rotated paper frame. Use
+`--magnetic-declination-deg` to override the automatic declination estimate.
 
 ## Convert An Existing GeoPackage
 
@@ -268,9 +289,10 @@ dedicated tracked directory and unignore them explicitly if needed.
 
 Near-term work toward real MML-only orienteering map generation:
 
-- Add automatic magnetic declination lookup or calculation from map center and
-  date, instead of requiring a manual `--magnetic-declination-deg` value.
-- Clip geometry to the rotated paper frame, not only to the enclosing MML bbox.
+- Improve automatic magnetic declination by replacing the lightweight
+  Finland-only estimate with an authoritative model or service.
+- Improve rotated-frame clipping for complex polygons with holes and topology
+  edge cases.
 - Add optional MML elevation model or laser scanning ingestion for direct,
   configurable contour generation.
 - Investigate source data for vegetation and forest density, including whether

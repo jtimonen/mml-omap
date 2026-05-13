@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime as dt
 import json
 import math
 import os
@@ -29,6 +30,12 @@ MML_OGC_PROCESSES_URL = (
 A3_WIDTH_MM = 420.0
 A3_HEIGHT_MM = 297.0
 MAX_ORIENTEERING_SCALE = 15000
+EPSG3067_FALSE_EASTING = 500000.0
+EPSG3067_FALSE_NORTHING = 0.0
+EPSG3067_SCALE = 0.9996
+EPSG3067_CENTRAL_MERIDIAN_DEG = 27.0
+GRS80_A = 6378137.0
+GRS80_INV_F = 298.257222101
 
 DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "tieviiva": {
@@ -165,6 +172,98 @@ def parse_orienteering_bbox(raw: str) -> list[float]:
     return bbox
 
 
+def bbox_center(bbox: list[float]) -> tuple[float, float]:
+    return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+
+
+def parse_date(raw: str | None) -> dt.date:
+    if not raw:
+        return dt.date.today()
+    try:
+        return dt.date.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError("--magnetic-date must be YYYY-MM-DD") from exc
+
+
+def decimal_year(date: dt.date) -> float:
+    start = dt.date(date.year, 1, 1)
+    end = dt.date(date.year + 1, 1, 1)
+    return date.year + (date - start).days / (end - start).days
+
+
+def epsg3067_to_wgs84(x: float, y: float) -> tuple[float, float]:
+    flattening = 1.0 / GRS80_INV_F
+    eccentricity_sq = flattening * (2.0 - flattening)
+    e1 = (1.0 - math.sqrt(1.0 - eccentricity_sq)) / (1.0 + math.sqrt(1.0 - eccentricity_sq))
+    mu = (y - EPSG3067_FALSE_NORTHING) / (
+        GRS80_A
+        * (
+            1.0
+            - eccentricity_sq / 4.0
+            - 3.0 * eccentricity_sq * eccentricity_sq / 64.0
+            - 5.0 * eccentricity_sq * eccentricity_sq * eccentricity_sq / 256.0
+        )
+        * EPSG3067_SCALE
+    )
+    phi1 = (
+        mu
+        + (3.0 * e1 / 2.0 - 27.0 * e1**3 / 32.0) * math.sin(2.0 * mu)
+        + (21.0 * e1 * e1 / 16.0 - 55.0 * e1**4 / 32.0) * math.sin(4.0 * mu)
+        + (151.0 * e1**3 / 96.0) * math.sin(6.0 * mu)
+        + (1097.0 * e1**4 / 512.0) * math.sin(8.0 * mu)
+    )
+    n1 = GRS80_A / math.sqrt(1.0 - eccentricity_sq * math.sin(phi1) ** 2)
+    t1 = math.tan(phi1) ** 2
+    c1 = eccentricity_sq / (1.0 - eccentricity_sq) * math.cos(phi1) ** 2
+    r1 = GRS80_A * (1.0 - eccentricity_sq) / (1.0 - eccentricity_sq * math.sin(phi1) ** 2) ** 1.5
+    d = (x - EPSG3067_FALSE_EASTING) / (n1 * EPSG3067_SCALE)
+
+    lat = phi1 - (n1 * math.tan(phi1) / r1) * (
+        d * d / 2.0
+        - (5.0 + 3.0 * t1 + 10.0 * c1 - 4.0 * c1 * c1 - 9.0 * eccentricity_sq) * d**4 / 24.0
+        + (
+            61.0
+            + 90.0 * t1
+            + 298.0 * c1
+            + 45.0 * t1 * t1
+            - 252.0 * eccentricity_sq
+            - 3.0 * c1 * c1
+        )
+        * d**6
+        / 720.0
+    )
+    lon = math.radians(EPSG3067_CENTRAL_MERIDIAN_DEG) + (
+        d
+        - (1.0 + 2.0 * t1 + c1) * d**3 / 6.0
+        + (5.0 - 2.0 * c1 + 28.0 * t1 - 3.0 * c1 * c1 + 8.0 * eccentricity_sq + 24.0 * t1 * t1)
+        * d**5
+        / 120.0
+    ) / math.cos(phi1)
+    return math.degrees(lat), math.degrees(lon)
+
+
+def estimate_finland_magnetic_declination_deg(x: float, y: float, date: dt.date) -> float:
+    lat, lon = epsg3067_to_wgs84(x, y)
+    # Lightweight Finland-only approximation for automatic map orientation.
+    # Users can still pass an explicit value when authoritative declination matters.
+    return 8.5 + 0.33 * (lon - 20.0) + 0.08 * (lat - 60.0) + 0.18 * (decimal_year(date) - 2025.0)
+
+
+def resolve_magnetic_declination_deg(
+    raw_declination: str,
+    *,
+    bbox: list[float],
+    magnetic_date: str | None,
+) -> float:
+    if raw_declination.lower() != "auto":
+        try:
+            return float(raw_declination)
+        except ValueError as exc:
+            raise ValueError("--magnetic-declination-deg must be a number or auto") from exc
+    center_x, center_y = bbox_center(bbox)
+    return estimate_finland_magnetic_declination_deg(center_x, center_y, parse_date(magnetic_date))
+
+
 def auth_headers(api_key: str) -> dict[str, str]:
     token = base64.b64encode(f"{api_key}:".encode("utf-8")).decode("ascii")
     return {"Authorization": f"Basic {token}"}
@@ -291,6 +390,8 @@ def convert_gpkg_to_geojson(
     bbox: list[float] | None,
     table_rules: dict[str, dict[str, Any]],
     include_unmapped: bool,
+    clip_frame: OrientedFrame | None = None,
+    map_frame: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     features: list[dict[str, Any]] = []
     with sqlite3.connect(gpkg_path) as connection:
@@ -303,6 +404,10 @@ def convert_gpkg_to_geojson(
                 geometry = parse_gpkg_geometry(row[geometry_column])
                 if geometry is None or (bbox is not None and not geometry_intersects_bbox(geometry, bbox)):
                     continue
+                if clip_frame is not None:
+                    geometry = clip_geometry_to_frame(geometry, clip_frame)
+                    if geometry is None:
+                        continue
                 properties = row_properties(row, geometry_column)
                 object_type, symbol = classify_feature(table, properties, geometry, rule)
                 if symbol is None and not include_unmapped:
@@ -316,12 +421,15 @@ def convert_gpkg_to_geojson(
                     }
                 )
                 features.append({"type": "Feature", "properties": properties, "geometry": geometry})
-    return {
+    geojson = {
         "type": "FeatureCollection",
         "name": "mml-omap",
         "crs": {"type": "name", "properties": {"name": "EPSG:3067"}},
         "features": features,
     }
+    if map_frame is not None:
+        geojson["map_frame"] = map_frame
+    return geojson
 
 
 def gpkg_feature_tables(connection: sqlite3.Connection) -> list[tuple[str, str]]:
@@ -480,6 +588,229 @@ def geometry_intersects_bbox(geometry: dict[str, Any], bbox: list[float]) -> boo
     return max(xs) >= bbox[0] and min(xs) <= bbox[2] and max(ys) >= bbox[1] and min(ys) <= bbox[3]
 
 
+class OrientedFrame:
+    def __init__(self, bbox: list[float], magnetic_declination_deg: float) -> None:
+        self.bbox = bbox
+        self.center_x, self.center_y = bbox_center(bbox)
+        self.half_width = (bbox[2] - bbox[0]) / 2.0
+        self.half_height = (bbox[3] - bbox[1]) / 2.0
+        angle = math.radians(magnetic_declination_deg)
+        self.sin_a = math.sin(angle)
+        self.cos_a = math.cos(angle)
+
+    def to_local(self, coordinate: Any) -> tuple[float, float]:
+        dx = float(coordinate[0]) - self.center_x
+        dy = float(coordinate[1]) - self.center_y
+        return self.cos_a * dx - self.sin_a * dy, self.sin_a * dx + self.cos_a * dy
+
+    def to_grid(self, point: tuple[float, float]) -> list[float]:
+        x, y = point
+        dx = self.cos_a * x + self.sin_a * y
+        dy = -self.sin_a * x + self.cos_a * y
+        return [self.center_x + dx, self.center_y + dy]
+
+    def contains_local(self, point: tuple[float, float]) -> bool:
+        x, y = point
+        return -self.half_width <= x <= self.half_width and -self.half_height <= y <= self.half_height
+
+
+def clip_line_segment(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    frame: OrientedFrame,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    dx = b[0] - a[0]
+    dy = b[1] - a[1]
+    p = [-dx, dx, -dy, dy]
+    q = [
+        a[0] + frame.half_width,
+        frame.half_width - a[0],
+        a[1] + frame.half_height,
+        frame.half_height - a[1],
+    ]
+    u1 = 0.0
+    u2 = 1.0
+    for p_i, q_i in zip(p, q):
+        if abs(p_i) < 1e-12:
+            if q_i < 0.0:
+                return None
+            continue
+        ratio = q_i / p_i
+        if p_i < 0.0:
+            u1 = max(u1, ratio)
+        else:
+            u2 = min(u2, ratio)
+        if u1 > u2:
+            return None
+    return (a[0] + u1 * dx, a[1] + u1 * dy), (a[0] + u2 * dx, a[1] + u2 * dy)
+
+
+def clip_line_string(coordinates: list[Any], frame: OrientedFrame) -> list[list[list[float]]]:
+    if len(coordinates) < 2:
+        return []
+    local_points = [frame.to_local(point) for point in coordinates]
+    lines: list[list[list[float]]] = []
+    current: list[list[float]] = []
+    for a, b in zip(local_points, local_points[1:]):
+        clipped = clip_line_segment(a, b, frame)
+        if clipped is None:
+            if len(current) > 1:
+                lines.append(current)
+            current = []
+            continue
+        start, end = clipped
+        start_grid = frame.to_grid(start)
+        end_grid = frame.to_grid(end)
+        if not current:
+            current = [start_grid, end_grid]
+        elif points_equal(current[-1], start_grid):
+            current.append(end_grid)
+        else:
+            if len(current) > 1:
+                lines.append(current)
+            current = [start_grid, end_grid]
+    if len(current) > 1:
+        lines.append(current)
+    return lines
+
+
+def points_equal(a: list[float], b: list[float]) -> bool:
+    return abs(a[0] - b[0]) < 1e-7 and abs(a[1] - b[1]) < 1e-7
+
+
+def clip_polygon_ring_local(ring: list[tuple[float, float]], frame: OrientedFrame) -> list[tuple[float, float]]:
+    def clip_edge(
+        points: list[tuple[float, float]],
+        inside: Any,
+        intersect: Any,
+    ) -> list[tuple[float, float]]:
+        if not points:
+            return []
+        output: list[tuple[float, float]] = []
+        previous = points[-1]
+        previous_inside = inside(previous)
+        for current in points:
+            current_inside = inside(current)
+            if current_inside:
+                if not previous_inside:
+                    output.append(intersect(previous, current))
+                output.append(current)
+            elif previous_inside:
+                output.append(intersect(previous, current))
+            previous = current
+            previous_inside = current_inside
+        return output
+
+    def vertical(x_limit: float, point: tuple[float, float]) -> bool:
+        return point[0] >= x_limit if x_limit < 0 else point[0] <= x_limit
+
+    def horizontal(y_limit: float, point: tuple[float, float]) -> bool:
+        return point[1] >= y_limit if y_limit < 0 else point[1] <= y_limit
+
+    def intersect_x(x_limit: float, a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+        if abs(b[0] - a[0]) < 1e-12:
+            return x_limit, a[1]
+        t = (x_limit - a[0]) / (b[0] - a[0])
+        return x_limit, a[1] + t * (b[1] - a[1])
+
+    def intersect_y(y_limit: float, a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+        if abs(b[1] - a[1]) < 1e-12:
+            return a[0], y_limit
+        t = (y_limit - a[1]) / (b[1] - a[1])
+        return a[0] + t * (b[0] - a[0]), y_limit
+
+    clipped = ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else list(ring)
+    clipped = clip_edge(
+        clipped,
+        lambda point: vertical(-frame.half_width, point),
+        lambda a, b: intersect_x(-frame.half_width, a, b),
+    )
+    clipped = clip_edge(
+        clipped,
+        lambda point: vertical(frame.half_width, point),
+        lambda a, b: intersect_x(frame.half_width, a, b),
+    )
+    clipped = clip_edge(
+        clipped,
+        lambda point: horizontal(-frame.half_height, point),
+        lambda a, b: intersect_y(-frame.half_height, a, b),
+    )
+    clipped = clip_edge(
+        clipped,
+        lambda point: horizontal(frame.half_height, point),
+        lambda a, b: intersect_y(frame.half_height, a, b),
+    )
+    if clipped and clipped[0] != clipped[-1]:
+        clipped.append(clipped[0])
+    return clipped
+
+
+def clip_polygon(coordinates: list[Any], frame: OrientedFrame) -> list[list[list[float]]] | None:
+    rings: list[list[list[float]]] = []
+    for ring in coordinates:
+        if len(ring) < 4:
+            continue
+        local_ring = [frame.to_local(point) for point in ring]
+        clipped_ring = clip_polygon_ring_local(local_ring, frame)
+        if len(clipped_ring) >= 4:
+            rings.append([frame.to_grid(point) for point in clipped_ring])
+    if not rings:
+        return None
+    return rings
+
+
+def clip_geometry_to_frame(geometry: dict[str, Any], frame: OrientedFrame) -> dict[str, Any] | None:
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    if geometry_type == "Point":
+        point = frame.to_local(coordinates)
+        return geometry if frame.contains_local(point) else None
+    if geometry_type == "MultiPoint":
+        points = [point for point in coordinates or [] if frame.contains_local(frame.to_local(point))]
+        return {"type": "MultiPoint", "coordinates": points} if points else None
+    if geometry_type == "LineString":
+        lines = clip_line_string(coordinates or [], frame)
+        if not lines:
+            return None
+        if len(lines) == 1:
+            return {"type": "LineString", "coordinates": lines[0]}
+        return {"type": "MultiLineString", "coordinates": lines}
+    if geometry_type == "MultiLineString":
+        lines = []
+        for line in coordinates or []:
+            lines.extend(clip_line_string(line, frame))
+        return {"type": "MultiLineString", "coordinates": lines} if lines else None
+    if geometry_type == "Polygon":
+        polygon = clip_polygon(coordinates or [], frame)
+        return {"type": "Polygon", "coordinates": polygon} if polygon else None
+    if geometry_type == "MultiPolygon":
+        polygons = []
+        for polygon in coordinates or []:
+            clipped_polygon = clip_polygon(polygon, frame)
+            if clipped_polygon:
+                polygons.append(clipped_polygon)
+        return {"type": "MultiPolygon", "coordinates": polygons} if polygons else None
+    return geometry
+
+
+def clip_geojson_to_frame(geojson: dict[str, Any], frame: OrientedFrame) -> dict[str, Any]:
+    features = []
+    for feature in geojson_features(geojson):
+        geometry = feature.get("geometry")
+        if not isinstance(geometry, dict):
+            continue
+        clipped_geometry = clip_geometry_to_frame(geometry, frame)
+        if clipped_geometry is None:
+            continue
+        clipped_feature = dict(feature)
+        clipped_feature["geometry"] = clipped_geometry
+        features.append(clipped_feature)
+    output = dict(geojson)
+    output["type"] = "FeatureCollection"
+    output["features"] = features
+    return output
+
+
 def collect_xy(raw: Any, xs: list[float], ys: list[float]) -> None:
     if isinstance(raw, (list, tuple)) and len(raw) >= 2 and all(isinstance(v, (int, float)) for v in raw[:2]):
         xs.append(float(raw[0]))
@@ -504,6 +835,9 @@ def geojson_features(geojson: dict[str, Any]) -> list[dict[str, Any]]:
 def geojson_bbox(geojson: dict[str, Any], raw_bbox: str | None = None) -> list[float]:
     if raw_bbox:
         return parse_bbox(raw_bbox)
+    map_frame = geojson.get("map_frame")
+    if isinstance(map_frame, dict) and isinstance(map_frame.get("bbox"), list):
+        return parse_bbox(",".join(str(value) for value in map_frame["bbox"]))
     xs: list[float] = []
     ys: list[float] = []
     for feature in geojson_features(geojson):
@@ -512,6 +846,16 @@ def geojson_bbox(geojson: dict[str, Any], raw_bbox: str | None = None) -> list[f
     if not xs or not ys:
         raise ValueError("GeoJSON contains no coordinates and --bbox was not provided")
     return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def geojson_map_frame_declination(geojson: dict[str, Any]) -> float | None:
+    map_frame = geojson.get("map_frame")
+    if not isinstance(map_frame, dict):
+        return None
+    declination = map_frame.get("magnetic_declination_deg")
+    if isinstance(declination, (int, float)):
+        return float(declination)
+    return None
 
 
 class RenderTransform:
@@ -892,7 +1236,12 @@ def command_download(args: argparse.Namespace) -> int:
     if not api_key:
         raise ValueError(f"Provide --api-key or set ${args.api_key_env}")
     bbox = parse_orienteering_bbox(args.bbox)
-    mml_bbox = enclosing_grid_bbox(bbox, args.magnetic_declination_deg)
+    magnetic_declination_deg = resolve_magnetic_declination_deg(
+        args.magnetic_declination_deg,
+        bbox=bbox,
+        magnetic_date=args.magnetic_date,
+    )
+    mml_bbox = enclosing_grid_bbox(bbox, magnetic_declination_deg)
     job_url = submit_mml_bbox_job(
         api_key=api_key,
         bbox=mml_bbox,
@@ -912,13 +1261,35 @@ def command_download(args: argparse.Namespace) -> int:
 
 
 def command_convert_gpkg(args: argparse.Namespace) -> int:
-    bbox = parse_bbox(args.bbox) if args.bbox else None
+    paper_bbox = parse_orienteering_bbox(args.bbox) if args.bbox else None
+    magnetic_date = parse_date(args.magnetic_date)
+    magnetic_declination_deg = (
+        resolve_magnetic_declination_deg(
+            args.magnetic_declination_deg,
+            bbox=paper_bbox,
+            magnetic_date=magnetic_date.isoformat(),
+        )
+        if paper_bbox
+        else 0.0
+    )
+    bbox = enclosing_grid_bbox(paper_bbox, magnetic_declination_deg) if paper_bbox else None
+    clip_frame = OrientedFrame(paper_bbox, magnetic_declination_deg) if paper_bbox else None
     rules = load_table_rules(Path(args.mapping) if args.mapping else None)
     geojson = convert_gpkg_to_geojson(
         Path(args.input),
         bbox=bbox,
+        clip_frame=clip_frame,
         table_rules=rules,
         include_unmapped=args.include_unmapped,
+        map_frame=(
+            {
+                "bbox": paper_bbox,
+                "magnetic_declination_deg": magnetic_declination_deg,
+                "magnetic_date": magnetic_date.isoformat(),
+            }
+            if paper_bbox
+            else None
+        ),
     )
     write_json(Path(args.output), geojson)
     print(f"Wrote {len(geojson['features'])} features.")
@@ -936,11 +1307,24 @@ def command_generate(args: argparse.Namespace) -> int:
     command_download(download_args)
     gpkg_path = extract_first_gpkg(archive_path, work_dir / output.stem)
     rules = load_table_rules(Path(args.mapping) if args.mapping else None)
+    paper_bbox = parse_orienteering_bbox(args.bbox)
+    magnetic_date = parse_date(args.magnetic_date)
+    magnetic_declination_deg = resolve_magnetic_declination_deg(
+        args.magnetic_declination_deg,
+        bbox=paper_bbox,
+        magnetic_date=magnetic_date.isoformat(),
+    )
     geojson = convert_gpkg_to_geojson(
         gpkg_path,
-        bbox=enclosing_grid_bbox(parse_orienteering_bbox(args.bbox), args.magnetic_declination_deg),
+        bbox=enclosing_grid_bbox(paper_bbox, magnetic_declination_deg),
+        clip_frame=OrientedFrame(paper_bbox, magnetic_declination_deg),
         table_rules=rules,
         include_unmapped=args.include_unmapped,
+        map_frame={
+            "bbox": paper_bbox,
+            "magnetic_declination_deg": magnetic_declination_deg,
+            "magnetic_date": magnetic_date.isoformat(),
+        },
     )
     write_json(output, geojson)
     print(f"Wrote {len(geojson['features'])} features from {gpkg_path}.")
@@ -948,31 +1332,51 @@ def command_generate(args: argparse.Namespace) -> int:
 
 
 def make_render_transform(args: argparse.Namespace, geojson: dict[str, Any]) -> RenderTransform:
+    bbox = geojson_bbox(geojson, args.bbox)
     if args.bbox:
-        validate_orienteering_bbox_size(parse_bbox(args.bbox))
+        validate_orienteering_bbox_size(bbox)
+    metadata_declination = None if args.bbox else geojson_map_frame_declination(geojson)
+    if args.magnetic_declination_deg.lower() == "auto" and metadata_declination is not None:
+        magnetic_declination_deg = metadata_declination
+    else:
+        magnetic_declination_deg = resolve_magnetic_declination_deg(
+            args.magnetic_declination_deg,
+            bbox=bbox,
+            magnetic_date=args.magnetic_date,
+        )
     return RenderTransform(
-        geojson_bbox(geojson, args.bbox),
+        bbox,
         scale=args.scale,
         margin_mm=args.margin_mm,
-        magnetic_declination_deg=args.magnetic_declination_deg,
+        magnetic_declination_deg=magnetic_declination_deg,
     )
+
+
+def clip_geojson_for_render(args: argparse.Namespace, geojson: dict[str, Any], transform: RenderTransform) -> dict[str, Any]:
+    if not args.bbox and not isinstance(geojson.get("map_frame"), dict):
+        return geojson
+    bbox = parse_bbox(args.bbox) if args.bbox else geojson_bbox(geojson)
+    return clip_geojson_to_frame(geojson, OrientedFrame(bbox, transform.magnetic_declination_deg))
 
 
 def command_render_svg(args: argparse.Namespace) -> int:
     geojson = read_json(Path(args.input))
-    render_svg(geojson, Path(args.output), transform=make_render_transform(args, geojson))
+    transform = make_render_transform(args, geojson)
+    render_svg(clip_geojson_for_render(args, geojson, transform), Path(args.output), transform=transform)
     return 0
 
 
 def command_render_png(args: argparse.Namespace) -> int:
     geojson = read_json(Path(args.input))
-    render_png(geojson, Path(args.output), transform=make_render_transform(args, geojson), dpi=args.dpi)
+    transform = make_render_transform(args, geojson)
+    render_png(clip_geojson_for_render(args, geojson, transform), Path(args.output), transform=transform, dpi=args.dpi)
     return 0
 
 
 def command_render_pdf(args: argparse.Namespace) -> int:
     geojson = read_json(Path(args.input))
-    render_pdf(geojson, Path(args.output), transform=make_render_transform(args, geojson))
+    transform = make_render_transform(args, geojson)
+    render_pdf(clip_geojson_for_render(args, geojson, transform), Path(args.output), transform=transform)
     return 0
 
 
@@ -992,10 +1396,10 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--bbox", required=True, help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
     download.add_argument(
         "--magnetic-declination-deg",
-        type=float,
-        default=0.0,
-        help="Magnetic north east of EPSG:3067/grid north in degrees. Expands the MML fetch bbox.",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto. Expands the MML fetch bbox.",
     )
+    download.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     download.add_argument("--theme", default="maastotietokanta_kaikki")
     download.set_defaults(func=command_download)
 
@@ -1003,6 +1407,12 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("input")
     convert.add_argument("output")
     convert.add_argument("--bbox", help="Optional min_x,min_y,max_x,max_y clip in EPSG:3067 meters")
+    convert.add_argument(
+        "--magnetic-declination-deg",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto. Used when --bbox is set.",
+    )
+    convert.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     convert.add_argument("--mapping", help="JSON table mapping overrides")
     convert.add_argument("--include-unmapped", action="store_true")
     convert.set_defaults(func=command_convert_gpkg)
@@ -1016,10 +1426,10 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--bbox", required=True, help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
     generate.add_argument(
         "--magnetic-declination-deg",
-        type=float,
-        default=0.0,
-        help="Magnetic north east of EPSG:3067/grid north in degrees. Expands the MML fetch bbox.",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto. Expands the MML fetch bbox.",
     )
+    generate.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     generate.add_argument("--theme", default="maastotietokanta_kaikki")
     generate.add_argument("--work-dir", default="builds/mml_downloads")
     generate.add_argument("--mapping", help="JSON table mapping overrides")
@@ -1034,10 +1444,10 @@ def build_parser() -> argparse.ArgumentParser:
     common_render.add_argument("--margin-mm", type=float, default=5.0)
     common_render.add_argument(
         "--magnetic-declination-deg",
-        type=float,
-        default=0.0,
-        help="Magnetic north east of EPSG:3067/grid north in degrees. Rotates the rendered map frame.",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto. Rotates the rendered map frame.",
     )
+    common_render.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
 
     render_svg_parser = subparsers.add_parser("render-svg", parents=[common_render], help="Render GeoJSON to SVG.")
     render_svg_parser.set_defaults(func=command_render_svg)

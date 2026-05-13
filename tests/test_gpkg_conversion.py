@@ -2,13 +2,19 @@ import sqlite3
 import struct
 import tempfile
 import unittest
+import datetime as dt
 from pathlib import Path
 
 from mml_omap.cli import (
     DEFAULT_TABLE_RULES,
+    OrientedFrame,
     RenderTransform,
+    clip_geometry_to_frame,
     convert_gpkg_to_geojson,
     enclosing_grid_bbox,
+    estimate_finland_magnetic_declination_deg,
+    geojson_bbox,
+    geojson_map_frame_declination,
     validate_orienteering_bbox_size,
 )
 
@@ -82,6 +88,33 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertAlmostEqual(center_x, north_x, places=6)
         self.assertLess(north_y, center_y)
+
+    def test_automatic_declination_estimate_is_plausible_for_finland(self) -> None:
+        declination = estimate_finland_magnetic_declination_deg(385396, 6672568, dt.date(2026, 5, 13))
+
+        self.assertGreater(declination, 8.0)
+        self.assertLess(declination, 14.0)
+
+    def test_line_is_clipped_to_rotated_paper_frame(self) -> None:
+        frame = OrientedFrame([0, 0, 1000, 1000], 10.0)
+        geometry = {"type": "LineString", "coordinates": [[-500, 500], [1500, 500]]}
+
+        clipped = clip_geometry_to_frame(geometry, frame)
+
+        self.assertIsNotNone(clipped)
+        self.assertEqual(clipped["type"], "LineString")
+        for coordinate in clipped["coordinates"]:
+            self.assertTrue(frame.contains_local(frame.to_local(coordinate)))
+
+    def test_geojson_map_frame_metadata_is_used_for_render_bounds(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "map_frame": {"bbox": [0, 0, 1000, 2000], "magnetic_declination_deg": 10.0},
+            "features": [],
+        }
+
+        self.assertEqual(geojson_bbox(geojson), [0.0, 0.0, 1000.0, 2000.0])
+        self.assertEqual(geojson_map_frame_declination(geojson), 10.0)
 
 
 if __name__ == "__main__":

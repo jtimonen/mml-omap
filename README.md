@@ -115,13 +115,9 @@ x = longitude_degrees - 25.0
 y = latitude_degrees - 62.0
 
 NEK_degrees =
-  11.439686695
-  + 0.130239730 * x
-  + 0.451532652 * y
-  + 0.060304561 * x * x
-  - 0.100703079 * x * y
-  - 0.169086417 * y * y
-  + 0.030650956 * y * y * y
+  11.071507931
+  + 0.432817643 * x
+  + 0.378133772 * y
   + 0.20 * (decimal_year - 2026.0)
 ```
 
@@ -134,27 +130,38 @@ NAK_degrees = atan(tan(longitude - 27 degrees) * sin(latitude))
 KOK_degrees = NEK_degrees + NAK_degrees
 ```
 
-The formula above is only a rough Finland-wide approximation. It is calibrated
-to sampled MML Erantokartta values at the beginning of 2026 for Helsinki, Turku,
-Lappeenranta, Kuopio, Ilomantsi, Rovaniemi, and Ivalo. It is not the official
-MML/FMI Erantokartta model.
+The formula above is only a rough Finland-wide approximation. It is a
+least-squares plane calibrated to sampled MML Erantokartta values at the
+beginning of 2026 for Helsinki, Turku, Lappeenranta, Kuopio, Ilomantsi,
+Rovaniemi, and Ivalo. It intentionally does not interpolate every sample point,
+and it is not the official MML/FMI Erantokartta model.
 
 Example `NEK` values from the current formula for the beginning of 2026:
 
-| City | Approximate WGS84 center | Estimated NEK |
-| --- | --- | ---: |
-| Helsinki | 60.1699 N, 24.9384 E | 9.84 deg |
-| Turku | 60.4518 N, 22.2666 E | 9.89 deg |
-| Tampere | 61.4978 N, 23.7610 E | 11.04 deg |
-| Kuopio | 62.8924 N, 27.6770 E | 12.27 deg |
-| Lappeenranta | 61.0587 N, 28.1887 E | 12.17 deg |
-| Ilomantsi | 62.6716 N, 30.9328 E | 14.17 deg |
-| Rovaniemi | 66.5039 N, 25.7294 E | 12.64 deg |
-| Ivalo | 68.6560 N, 27.5390 E | 15.01 deg |
+| City | Approximate WGS84 center | Model NEK | Erantokartta sample | Residual |
+| --- | --- | ---: | ---: | ---: |
+| Helsinki | 60.1699 N, 24.9384 E | 10.35 deg | 9.84 deg | +0.51 deg |
+| Turku | 60.4518 N, 22.2666 E | 9.30 deg | 9.89 deg | -0.59 deg |
+| Tampere | 61.4978 N, 23.7610 E | 10.35 deg | | |
+| Kuopio | 62.8924 N, 27.6770 E | 12.57 deg | 12.27 deg | +0.30 deg |
+| Lappeenranta | 61.0587 N, 28.1887 E | 12.10 deg | 12.17 deg | -0.07 deg |
+| Ilomantsi | 62.6716 N, 30.9328 E | 13.89 deg | 14.17 deg | -0.28 deg |
+| Rovaniemi | 66.5039 N, 25.7294 E | 13.09 deg | 12.64 deg | +0.45 deg |
+| Ivalo | 68.6560 N, 27.5390 E | 14.69 deg | 15.01 deg | -0.32 deg |
 
 The same model as a rough Finland heatmap:
 
 ![Finland NEK, NAK, and KOK heatmap](docs/finland_nek_nak_kok_heatmap.svg)
+
+Regenerate the heatmap with:
+
+```sh
+uv run python tools/generate_declination_heatmap.py docs/finland_nek_nak_kok_heatmap.svg
+```
+
+The generator reads `docs/finland_boundary.geojson`, a Finland feature extracted
+from the Natural Earth-derived `geo-countries` dataset, and draws equal-value
+contour lines over the generated heatmap.
 
 The requested paper rectangle is limited to A3 at 1:15000, or 6300 m x 4455 m
 in either portrait or landscape orientation. Larger rectangles error before a

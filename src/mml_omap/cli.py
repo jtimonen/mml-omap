@@ -256,13 +256,9 @@ def estimate_finland_magnetic_declination_wgs84(latitude_deg: float, longitude_d
     # calibrated against sampled MML Erantokartta city values at the start of 2026.
     # Users can still pass an explicit value when authoritative declination matters.
     return (
-        11.439686695
-        + 0.130239730 * lon_offset
-        + 0.451532652 * lat_offset
-        + 0.060304561 * lon_offset * lon_offset
-        - 0.100703079 * lon_offset * lat_offset
-        - 0.169086417 * lat_offset * lat_offset
-        + 0.030650956 * lat_offset * lat_offset * lat_offset
+        11.071507931
+        + 0.432817643 * lon_offset
+        + 0.378133772 * lat_offset
         + 0.20 * year_offset
     )
 

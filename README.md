@@ -160,8 +160,8 @@ uv run python tools/generate_declination_heatmap.py docs/finland_nek_nak_kok_hea
 ```
 
 The generator reads `docs/finland_boundary.geojson`, a Finland feature extracted
-from the Natural Earth-derived `geo-countries` dataset, and draws equal-value
-contour lines over the generated heatmap.
+from the Natural Earth-derived `geo-countries` dataset. It uses matplotlib and
+numpy to draw filled contours and equal-value contour lines over the map.
 
 The requested paper rectangle is limited to A3 at 1:15000, or 6300 m x 4455 m
 in either portrait or landscape orientation. Larger rectangles error before a
@@ -171,13 +171,17 @@ download job is submitted.
 
 There are generic tools that cover parts of this workflow:
 
+- Karttapullautin is the closest existing tool in spirit: it is built for
+  generating orienteering-map material from source geodata.
 - `ogc-api-processes-client` is a generic OGC API Processes Python client.
 - GDAL/OGR can convert GeoPackage to GeoJSON once you already have the data.
 - Other GeoPackage/GeoJSON utilities can inspect or convert local files.
 
-This project exists to combine the MML-specific job request, API-key auth,
-download handling, GeoPackage geometry decoding, and practical table-to-symbol
-mapping into one CLI.
+The generic GIS tools above do not know anything about orienteering symbols,
+magnetic-north paper frames, or sport-specific map conventions. This project
+exists to combine the MML-specific job request, API-key auth, download handling,
+GeoPackage geometry decoding, and practical table-to-symbol mapping into one
+CLI.
 
 ## Install And Run With uv
 

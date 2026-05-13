@@ -8,6 +8,10 @@ version = "0.1.0"
 description = "Generate orienteering-oriented maps from Maanmittauslaitos open topographic data."
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = [
+  "matplotlib>=3.9",
+  "numpy>=2.0",
+]
 license = "MIT"
 authors = [
   { name = "mml-omap contributors" }

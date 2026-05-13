@@ -1,7 +1,12 @@
 # mml-omap
 
 Generate orienteering-oriented map data and map previews from
-Maanmittauslaitos open topographic data.
+Maanmittauslaitos open topographic data. The goal is to make actual
+orienteering maps, plus useful intermediate GeoJSON files, from MML data alone.
+
+This is still alpha software. It can already download MML data, convert selected
+features to symbolized GeoJSON, and render simple SVG/PNG/PDF previews. It is
+not yet a complete ISOM/ISSprOM-quality cartographic production tool.
 
 The tool is intentionally small:
 
@@ -11,10 +16,26 @@ The tool is intentionally small:
 - Converts selected GeoPackage feature tables to GeoJSON.
 - Adds optional `symbol` and `object_type` properties.
 - Renders GeoJSON to SVG, PNG, or PDF.
+- Supports magnetic-north-oriented paper frames for rendered maps.
 - Uses only the Python standard library.
 
 Coordinates are ETRS-TM35FIN / EPSG:3067 meters, matching the native MML file
 service output.
+
+## Orientation And Size
+
+MML's `boundingBoxInput` is an axis-aligned rectangle in EPSG:3067 coordinates.
+That is not the same thing as the rectangle printed on an orienteering map when
+the map is oriented to magnetic north.
+
+In `mml-omap`, `--bbox` is treated as the intended paper map frame. If you pass
+`--magnetic-declination-deg`, the tool expands the MML download request to the
+smallest EPSG:3067 bbox that contains that rotated paper frame, then renders the
+paper frame with magnetic north pointing up.
+
+The requested paper rectangle is limited to A3 at 1:15000, or 6300 m x 4455 m
+in either portrait or landscape orientation. Larger rectangles error before a
+download job is submitted.
 
 ## Existing Tools
 
@@ -39,13 +60,28 @@ python3 -m pip install .
 Or run without installing:
 
 ```sh
-python3 -m mml_omap.cli --help
+PYTHONPATH=src python3 -m mml_omap.cli --help
 ```
 
-## API Key
+For development, use an isolated environment:
 
-MML open APIs require an API key. Create one in Maanmittauslaitos OmaTili and
-set it in your environment:
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -e .
+python3 -m unittest discover -s tests
+```
+
+## API Key Setup
+
+MML open API services require an API key for Paikkatiedon tiedostopalvelu
+(OGC API Processes), which this tool uses. Create the key in Maanmittauslaitos
+OmaTili using MML's API key instructions:
+
+- API key instructions: https://www.maanmittauslaitos.fi/rajapinnat/api-avaimen-ohje
+- OGC API Processes service: https://avoin-paikkatieto.maanmittauslaitos.fi/tiedostopalvelu/ogcproc/v1/
+
+After creating the key, set it in your shell:
 
 ```sh
 export MML_API_KEY="your-api-key"
@@ -54,6 +90,12 @@ export MML_API_KEY="your-api-key"
 You can also pass `--api-key`, but the environment variable is better for shell
 history.
 
+If you prefer a local `.env` file for your own shell tooling, do not commit it:
+
+```sh
+MML_API_KEY=your-api-key
+```
+
 ## Generate GeoJSON From A BBOX
 
 Bounding boxes are `min_x,min_y,max_x,max_y` in EPSG:3067 meters:
@@ -61,6 +103,15 @@ Bounding boxes are `min_x,min_y,max_x,max_y` in EPSG:3067 meters:
 ```sh
 mml-omap generate output.geojson \
   --bbox 385396,6672568,389620,6677160
+```
+
+For a magnetic-north-oriented paper frame, pass local declination in degrees.
+Positive values mean magnetic north is east of EPSG:3067/grid north:
+
+```sh
+mml-omap generate output.geojson \
+  --bbox 385396,6672568,389620,6677160 \
+  --magnetic-declination-deg 10.5
 ```
 
 By default, temporary downloads are kept under `builds/mml_downloads`. Override
@@ -72,6 +123,9 @@ with `--work-dir`.
 mml-omap download mml_area.zip \
   --bbox 385396,6672568,389620,6677160
 ```
+
+With `--magnetic-declination-deg`, this command downloads the enclosing MML bbox
+for the rotated paper frame.
 
 ## Convert An Existing GeoPackage
 
@@ -106,6 +160,7 @@ frame:
 ```sh
 mml-omap render-pdf output.geojson map.pdf \
   --bbox 385396,6672568,389620,6677160 \
+  --magnetic-declination-deg 10.5 \
   --scale 10000 \
   --margin-mm 5
 ```
@@ -160,3 +215,27 @@ Use GeoJSON-capable GIS tools or the built-in render commands to inspect it.
 
 Maanmittauslaitos data licensing and attribution requirements still apply to
 the downloaded data.
+
+Generated data and map files can be large. The repository `.gitignore` excludes
+download archives, GeoPackages, rendered maps, local build folders, caches,
+virtual environments, and `.env` files. Keep curated fixtures or examples in a
+dedicated tracked directory and unignore them explicitly if needed.
+
+## Future Development Plans
+
+Near-term work toward real MML-only orienteering map generation:
+
+- Add automatic magnetic declination lookup or calculation from map center and
+  date, instead of requiring a manual `--magnetic-declination-deg` value.
+- Clip geometry to the rotated paper frame, not only to the enclosing MML bbox.
+- Expand MML table mappings into a fuller ISOM/ISSprOM-oriented symbol model.
+- Add contour handling that is suitable for orienteering, including better
+  index contour and form-line support where source data allows it.
+- Improve vegetation, marsh, rock, water, road, path, and building
+  generalization from MML source classes.
+- Add layout elements expected on real printed maps: north lines, scale,
+  attribution, title, legend options, and print margins.
+- Add higher-fidelity SVG/PDF rendering with proper overprint order, line
+  joins, masks, and symbol dimensions.
+- Add regression fixtures from small public MML extracts so map output changes
+  can be reviewed safely.

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import os
 import sqlite3
 import struct
@@ -25,6 +26,9 @@ from typing import Any
 MML_OGC_PROCESSES_URL = (
     "https://avoin-paikkatieto.maanmittauslaitos.fi/tiedostopalvelu/ogcproc/v1"
 )
+A3_WIDTH_MM = 420.0
+A3_HEIGHT_MM = 297.0
+MAX_ORIENTEERING_SCALE = 15000
 
 DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "tieviiva": {
@@ -112,6 +116,53 @@ def parse_bbox(raw: str) -> list[float]:
     if parts[2] <= parts[0] or parts[3] <= parts[1]:
         raise ValueError("--bbox max values must be greater than min values")
     return parts
+
+
+def validate_orienteering_bbox_size(bbox: list[float]) -> None:
+    width_m = bbox[2] - bbox[0]
+    height_m = bbox[3] - bbox[1]
+    max_long_side_m = A3_WIDTH_MM * MAX_ORIENTEERING_SCALE / 1000.0
+    max_short_side_m = A3_HEIGHT_MM * MAX_ORIENTEERING_SCALE / 1000.0
+    long_side_m = max(width_m, height_m)
+    short_side_m = min(width_m, height_m)
+    if long_side_m > max_long_side_m or short_side_m > max_short_side_m:
+        raise ValueError(
+            "Requested rectangle is too large for an orienteering map: "
+            f"{width_m:.0f} m x {height_m:.0f} m exceeds A3 at 1:{MAX_ORIENTEERING_SCALE} "
+            f"({max_long_side_m:.0f} m x {max_short_side_m:.0f} m)"
+        )
+
+
+def oriented_bbox_corners(bbox: list[float], magnetic_declination_deg: float) -> list[tuple[float, float]]:
+    center_x = (bbox[0] + bbox[2]) / 2.0
+    center_y = (bbox[1] + bbox[3]) / 2.0
+    half_width = (bbox[2] - bbox[0]) / 2.0
+    half_height = (bbox[3] - bbox[1]) / 2.0
+    angle = math.radians(magnetic_declination_deg)
+    sin_a = math.sin(angle)
+    cos_a = math.cos(angle)
+    corners = []
+    for map_x in (-half_width, half_width):
+        for map_y in (-half_height, half_height):
+            dx = cos_a * map_x + sin_a * map_y
+            dy = -sin_a * map_x + cos_a * map_y
+            corners.append((center_x + dx, center_y + dy))
+    return corners
+
+
+def enclosing_grid_bbox(bbox: list[float], magnetic_declination_deg: float) -> list[float]:
+    if abs(magnetic_declination_deg) < 0.000001:
+        return bbox
+    corners = oriented_bbox_corners(bbox, magnetic_declination_deg)
+    xs = [corner[0] for corner in corners]
+    ys = [corner[1] for corner in corners]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def parse_orienteering_bbox(raw: str) -> list[float]:
+    bbox = parse_bbox(raw)
+    validate_orienteering_bbox_size(bbox)
+    return bbox
 
 
 def auth_headers(api_key: str) -> dict[str, str]:
@@ -464,12 +515,24 @@ def geojson_bbox(geojson: dict[str, Any], raw_bbox: str | None = None) -> list[f
 
 
 class RenderTransform:
-    def __init__(self, bbox: list[float], scale: int, margin_mm: float) -> None:
+    def __init__(
+        self,
+        bbox: list[float],
+        scale: int,
+        margin_mm: float,
+        magnetic_declination_deg: float = 0.0,
+    ) -> None:
         self.min_x, self.min_y, self.max_x, self.max_y = bbox
         self.scale = max(int(scale), 1)
         self.margin_mm = max(float(margin_mm), 0.0)
         self.width_m = max(self.max_x - self.min_x, 0.001)
         self.height_m = max(self.max_y - self.min_y, 0.001)
+        self.center_x = (self.min_x + self.max_x) / 2.0
+        self.center_y = (self.min_y + self.max_y) / 2.0
+        self.magnetic_declination_deg = float(magnetic_declination_deg)
+        angle = math.radians(self.magnetic_declination_deg)
+        self._sin_declination = math.sin(angle)
+        self._cos_declination = math.cos(angle)
         self.map_width_mm = self.width_m * 1000.0 / self.scale
         self.map_height_mm = self.height_m * 1000.0 / self.scale
         self.page_width_mm = self.map_width_mm + self.margin_mm * 2.0
@@ -478,8 +541,12 @@ class RenderTransform:
     def to_mm(self, coordinate: Any) -> tuple[float, float]:
         if not isinstance(coordinate, (list, tuple)) or len(coordinate) < 2:
             raise ValueError(f"Invalid coordinate: {coordinate!r}")
-        x = self.margin_mm + (float(coordinate[0]) - self.min_x) * 1000.0 / self.scale
-        y = self.margin_mm + (self.max_y - float(coordinate[1])) * 1000.0 / self.scale
+        dx = float(coordinate[0]) - self.center_x
+        dy = float(coordinate[1]) - self.center_y
+        map_x = self._cos_declination * dx - self._sin_declination * dy
+        map_y = self._sin_declination * dx + self._cos_declination * dy
+        x = self.margin_mm + (self.width_m / 2.0 + map_x) * 1000.0 / self.scale
+        y = self.margin_mm + (self.height_m / 2.0 - map_y) * 1000.0 / self.scale
         return x, y
 
 
@@ -824,10 +891,11 @@ def command_download(args: argparse.Namespace) -> int:
     api_key = args.api_key or os.environ.get(args.api_key_env)
     if not api_key:
         raise ValueError(f"Provide --api-key or set ${args.api_key_env}")
-    bbox = parse_bbox(args.bbox)
+    bbox = parse_orienteering_bbox(args.bbox)
+    mml_bbox = enclosing_grid_bbox(bbox, args.magnetic_declination_deg)
     job_url = submit_mml_bbox_job(
         api_key=api_key,
-        bbox=bbox,
+        bbox=mml_bbox,
         theme=args.theme,
         base_url=args.base_url.rstrip("/"),
     )
@@ -870,7 +938,7 @@ def command_generate(args: argparse.Namespace) -> int:
     rules = load_table_rules(Path(args.mapping) if args.mapping else None)
     geojson = convert_gpkg_to_geojson(
         gpkg_path,
-        bbox=parse_bbox(args.bbox),
+        bbox=enclosing_grid_bbox(parse_orienteering_bbox(args.bbox), args.magnetic_declination_deg),
         table_rules=rules,
         include_unmapped=args.include_unmapped,
     )
@@ -880,7 +948,14 @@ def command_generate(args: argparse.Namespace) -> int:
 
 
 def make_render_transform(args: argparse.Namespace, geojson: dict[str, Any]) -> RenderTransform:
-    return RenderTransform(geojson_bbox(geojson, args.bbox), scale=args.scale, margin_mm=args.margin_mm)
+    if args.bbox:
+        validate_orienteering_bbox_size(parse_bbox(args.bbox))
+    return RenderTransform(
+        geojson_bbox(geojson, args.bbox),
+        scale=args.scale,
+        margin_mm=args.margin_mm,
+        magnetic_declination_deg=args.magnetic_declination_deg,
+    )
 
 
 def command_render_svg(args: argparse.Namespace) -> int:
@@ -915,6 +990,12 @@ def build_parser() -> argparse.ArgumentParser:
     download = subparsers.add_parser("download", parents=[common_api], help="Download MML bbox GeoPackage zip.")
     download.add_argument("output")
     download.add_argument("--bbox", required=True, help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
+    download.add_argument(
+        "--magnetic-declination-deg",
+        type=float,
+        default=0.0,
+        help="Magnetic north east of EPSG:3067/grid north in degrees. Expands the MML fetch bbox.",
+    )
     download.add_argument("--theme", default="maastotietokanta_kaikki")
     download.set_defaults(func=command_download)
 
@@ -933,6 +1014,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate.add_argument("output")
     generate.add_argument("--bbox", required=True, help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
+    generate.add_argument(
+        "--magnetic-declination-deg",
+        type=float,
+        default=0.0,
+        help="Magnetic north east of EPSG:3067/grid north in degrees. Expands the MML fetch bbox.",
+    )
     generate.add_argument("--theme", default="maastotietokanta_kaikki")
     generate.add_argument("--work-dir", default="builds/mml_downloads")
     generate.add_argument("--mapping", help="JSON table mapping overrides")
@@ -945,6 +1032,12 @@ def build_parser() -> argparse.ArgumentParser:
     common_render.add_argument("--bbox", help="Optional render bounds as min_x,min_y,max_x,max_y")
     common_render.add_argument("--scale", type=int, default=10000)
     common_render.add_argument("--margin-mm", type=float, default=5.0)
+    common_render.add_argument(
+        "--magnetic-declination-deg",
+        type=float,
+        default=0.0,
+        help="Magnetic north east of EPSG:3067/grid north in degrees. Rotates the rendered map frame.",
+    )
 
     render_svg_parser = subparsers.add_parser("render-svg", parents=[common_render], help="Render GeoJSON to SVG.")
     render_svg_parser.set_defaults(func=command_render_svg)

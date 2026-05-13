@@ -22,6 +22,49 @@ The tool is intentionally small:
 Coordinates are ETRS-TM35FIN / EPSG:3067 meters, matching the native MML file
 service output.
 
+## Data Sources And Coverage
+
+Today, `mml-omap` uses only the GeoPackage returned by MML's
+`maastotietokanta_bbox` process from Paikkatiedon tiedostopalvelu. It does not
+currently download or process MML laser scanning point clouds, elevation models,
+hillshade rasters, aerial imagery, forest inventory rasters, or other raster
+products.
+
+That means the current output is useful as a generated base map and as
+intermediate GeoJSON, but it is not enough by itself for a finished,
+field-checked orienteering map. Real orienteering maps usually need better
+contour generation, vegetation runnability interpretation, generalization,
+symbol conflict handling, and human cartographic review.
+
+Current source usage by feature type:
+
+- Contours: read from the MML topographic database GeoPackage table
+  `korkeuskayra` and rendered as `contour`. The tool does not currently derive
+  contours directly from laser scanning data or an elevation model.
+- Vegetation: not meaningfully generated yet. Some open or semi-open land-cover
+  tables such as `maatalousmaa`, `niitty`, `muuavoinalue`, `puisto`, and
+  `urheilujavirkistysalue` are mapped as `field`, and `kallioalue` is mapped as
+  `open_rock`. Forest vegetation and runnability need future source mapping or
+  raster analysis.
+- Lakes and bodies of water: read from `jarvi` and `meri`, mapped as `lake`.
+- Streams and rivers: narrow streams are read from `virtavesikapea` and mapped
+  as `stream`; wider water areas are read from `virtavesialue` and mapped as
+  `river`.
+- Swamps: read from `suo` and `soistuma`, mapped as `swamp`.
+- Cliffs: read from `jyrkanne`, mapped as `cliff`. The tool does not currently
+  infer cliffs from slope, laser scanning, or elevation models.
+- Roads: read from `tieviiva`. Selected `kohdeluokka` values are mapped as
+  `road`.
+- Paths: read from `tieviiva`. Selected `kohdeluokka` values are mapped as
+  `path`.
+- Forest density: not currently generated. No laser-scan, canopy, forest
+  inventory, or vegetation-density raster is processed.
+- Buildings and other human-built objects: `rakennus` is mapped as `building`,
+  `rakennusreunaviiva` as building linework, and `aita` as `fence`. Other
+  human-made features require more table mappings.
+- Rocks: `kivi` is mapped as `mapped_rock`. The tool does not currently infer
+  boulders or rocky ground from laser scanning or imagery.
+
 ## Orientation And Size
 
 MML's `boundingBoxInput` is an axis-aligned rectangle in EPSG:3067 coordinates.
@@ -228,6 +271,11 @@ Near-term work toward real MML-only orienteering map generation:
 - Add automatic magnetic declination lookup or calculation from map center and
   date, instead of requiring a manual `--magnetic-declination-deg` value.
 - Clip geometry to the rotated paper frame, not only to the enclosing MML bbox.
+- Add optional MML elevation model or laser scanning ingestion for direct,
+  configurable contour generation.
+- Investigate source data for vegetation and forest density, including whether
+  MML topographic classes, forest inventory data, laser scanning, or derived
+  rasters can produce useful runnability estimates.
 - Expand MML table mappings into a fuller ISOM/ISSprOM-oriented symbol model.
 - Add contour handling that is suitable for orienteering, including better
   index contour and form-line support where source data allows it.

@@ -248,16 +248,33 @@ def meridian_convergence_deg(latitude_deg: float, longitude_deg: float) -> float
     return math.degrees(math.atan(math.tan(lon_delta) * math.sin(lat)))
 
 
+def estimate_finland_magnetic_declination_wgs84(latitude_deg: float, longitude_deg: float, date: dt.date) -> float:
+    lon_offset = longitude_deg - 25.0
+    lat_offset = latitude_deg - 62.0
+    year_offset = decimal_year(date) - 2026.0
+    # Lightweight Finland-only NEK approximation for automatic map orientation,
+    # calibrated against sampled MML Erantokartta city values at the start of 2026.
+    # Users can still pass an explicit value when authoritative declination matters.
+    return (
+        11.439686695
+        + 0.130239730 * lon_offset
+        + 0.451532652 * lat_offset
+        + 0.060304561 * lon_offset * lon_offset
+        - 0.100703079 * lon_offset * lat_offset
+        - 0.169086417 * lat_offset * lat_offset
+        + 0.030650956 * lat_offset * lat_offset * lat_offset
+        + 0.20 * year_offset
+    )
+
+
 def estimate_finland_magnetic_declination_deg(x: float, y: float, date: dt.date) -> float:
     lat, lon = epsg3067_to_wgs84(x, y)
-    # Lightweight Finland-only NEK approximation for automatic map orientation.
-    # Users can still pass an explicit value when authoritative declination matters.
-    return 8.5 + 0.33 * (lon - 20.0) + 0.08 * (lat - 60.0) + 0.18 * (decimal_year(date) - 2025.0)
+    return estimate_finland_magnetic_declination_wgs84(lat, lon, date)
 
 
 def estimate_finland_total_correction_deg(x: float, y: float, date: dt.date) -> float:
     lat, lon = epsg3067_to_wgs84(x, y)
-    magnetic_declination_deg = estimate_finland_magnetic_declination_deg(x, y, date)
+    magnetic_declination_deg = estimate_finland_magnetic_declination_wgs84(lat, lon, date)
     grid_to_true_correction_deg = meridian_convergence_deg(lat, lon)
     return magnetic_declination_deg + grid_to_true_correction_deg
 

@@ -92,10 +92,9 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertLess(north_y, center_y)
 
     def test_automatic_declination_estimate_is_plausible_for_finland(self) -> None:
-        declination = estimate_finland_magnetic_declination_deg(385396, 6672568, dt.date(2026, 5, 13))
+        declination = estimate_finland_magnetic_declination_deg(385396, 6672568, dt.date(2026, 1, 1))
 
-        self.assertGreater(declination, 8.0)
-        self.assertLess(declination, 14.0)
+        self.assertAlmostEqual(declination, 9.84, places=2)
 
     def test_total_correction_includes_grid_convergence(self) -> None:
         date = dt.date(2026, 5, 13)

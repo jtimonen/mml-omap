@@ -22,6 +22,24 @@ The tool is intentionally small:
 Coordinates are ETRS-TM35FIN / EPSG:3067 meters, matching the native MML file
 service output.
 
+## Coordinate System
+
+`EPSG:3067` is the EPSG registry code for Finland's standard projected map
+coordinate system, `ETRS-TM35FIN`. In practice, this means coordinates are
+stored as metric `E,N` values instead of latitude/longitude degrees. The `E`
+coordinate is easting in meters and the `N` coordinate is northing in meters.
+
+`ETRS-TM35FIN` means:
+
+- `ETRS` refers to the European Terrestrial Reference System, the geodetic
+  reference frame used for the coordinates.
+- `TM35` means Transverse Mercator zone 35, using 27 degrees east as the central
+  meridian.
+- `FIN` is the Finnish national realization of that projected coordinate system.
+
+MML topographic data is delivered in this coordinate system, so `mml-omap`
+keeps GeoJSON coordinates in EPSG:3067 meters.
+
 ## Data Sources And Coverage
 
 Today, `mml-omap` uses only the GeoPackage returned by MML's
@@ -88,6 +106,55 @@ https://www.maanmittauslaitos.fi/kartat-ja-paikkatieto/kartat/erantokartta
 Pass `--magnetic-declination-deg 10.5` when you want to use an authoritative
 local value manually. Use `--magnetic-date YYYY-MM-DD` to calculate the automatic
 estimate for a specific date; otherwise the current date is used.
+
+The current automatic `NEK` estimate is deliberately simple:
+
+```text
+decimal_year = year + day_of_year_elapsed / days_in_year
+x = longitude_degrees - 25.0
+y = latitude_degrees - 62.0
+
+NEK_degrees =
+  11.439686695
+  + 0.130239730 * x
+  + 0.451532652 * y
+  + 0.060304561 * x * x
+  - 0.100703079 * x * y
+  - 0.169086417 * y * y
+  + 0.030650956 * y * y * y
+  + 0.20 * (decimal_year - 2026.0)
+```
+
+The tool converts the EPSG:3067 map center to WGS84 latitude/longitude before
+using this formula. It then calculates `NAK` as meridian convergence in
+ETRS-TM35FIN:
+
+```text
+NAK_degrees = atan(tan(longitude - 27 degrees) * sin(latitude))
+KOK_degrees = NEK_degrees + NAK_degrees
+```
+
+The formula above is only a rough Finland-wide approximation. It is calibrated
+to sampled MML Erantokartta values at the beginning of 2026 for Helsinki, Turku,
+Lappeenranta, Kuopio, Ilomantsi, Rovaniemi, and Ivalo. It is not the official
+MML/FMI Erantokartta model.
+
+Example `NEK` values from the current formula for the beginning of 2026:
+
+| City | Approximate WGS84 center | Estimated NEK |
+| --- | --- | ---: |
+| Helsinki | 60.1699 N, 24.9384 E | 9.84 deg |
+| Turku | 60.4518 N, 22.2666 E | 9.89 deg |
+| Tampere | 61.4978 N, 23.7610 E | 11.04 deg |
+| Kuopio | 62.8924 N, 27.6770 E | 12.27 deg |
+| Lappeenranta | 61.0587 N, 28.1887 E | 12.17 deg |
+| Ilomantsi | 62.6716 N, 30.9328 E | 14.17 deg |
+| Rovaniemi | 66.5039 N, 25.7294 E | 12.64 deg |
+| Ivalo | 68.6560 N, 27.5390 E | 15.01 deg |
+
+The same model as a rough Finland heatmap:
+
+![Finland NEK, NAK, and KOK heatmap](docs/finland_nek_nak_kok_heatmap.svg)
 
 The requested paper rectangle is limited to A3 at 1:15000, or 6300 m x 4455 m
 in either portrait or landscape orientation. Larger rectangles error before a

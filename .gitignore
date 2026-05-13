@@ -22,3 +22,5 @@ builds/
 *.pdf
 *.png
 *.svg
+!docs/
+!docs/*.svg

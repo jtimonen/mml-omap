@@ -242,11 +242,24 @@ def epsg3067_to_wgs84(x: float, y: float) -> tuple[float, float]:
     return math.degrees(lat), math.degrees(lon)
 
 
+def meridian_convergence_deg(latitude_deg: float, longitude_deg: float) -> float:
+    lat = math.radians(latitude_deg)
+    lon_delta = math.radians(longitude_deg - EPSG3067_CENTRAL_MERIDIAN_DEG)
+    return math.degrees(math.atan(math.tan(lon_delta) * math.sin(lat)))
+
+
 def estimate_finland_magnetic_declination_deg(x: float, y: float, date: dt.date) -> float:
     lat, lon = epsg3067_to_wgs84(x, y)
-    # Lightweight Finland-only approximation for automatic map orientation.
+    # Lightweight Finland-only NEK approximation for automatic map orientation.
     # Users can still pass an explicit value when authoritative declination matters.
     return 8.5 + 0.33 * (lon - 20.0) + 0.08 * (lat - 60.0) + 0.18 * (decimal_year(date) - 2025.0)
+
+
+def estimate_finland_total_correction_deg(x: float, y: float, date: dt.date) -> float:
+    lat, lon = epsg3067_to_wgs84(x, y)
+    magnetic_declination_deg = estimate_finland_magnetic_declination_deg(x, y, date)
+    grid_to_true_correction_deg = meridian_convergence_deg(lat, lon)
+    return magnetic_declination_deg + grid_to_true_correction_deg
 
 
 def resolve_magnetic_declination_deg(
@@ -259,9 +272,9 @@ def resolve_magnetic_declination_deg(
         try:
             return float(raw_declination)
         except ValueError as exc:
-            raise ValueError("--magnetic-declination-deg must be a number or auto") from exc
+            raise ValueError("--magnetic-declination-deg must be a map-north correction in degrees or auto") from exc
     center_x, center_y = bbox_center(bbox)
-    return estimate_finland_magnetic_declination_deg(center_x, center_y, parse_date(magnetic_date))
+    return estimate_finland_total_correction_deg(center_x, center_y, parse_date(magnetic_date))
 
 
 def auth_headers(api_key: str) -> dict[str, str]:
@@ -1397,7 +1410,7 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument(
         "--magnetic-declination-deg",
         default="auto",
-        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto. Expands the MML fetch bbox.",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK. Expands the MML fetch bbox.",
     )
     download.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     download.add_argument("--theme", default="maastotietokanta_kaikki")
@@ -1410,7 +1423,7 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument(
         "--magnetic-declination-deg",
         default="auto",
-        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto. Used when --bbox is set.",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK. Used when --bbox is set.",
     )
     convert.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     convert.add_argument("--mapping", help="JSON table mapping overrides")
@@ -1427,7 +1440,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument(
         "--magnetic-declination-deg",
         default="auto",
-        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto. Expands the MML fetch bbox.",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK. Expands the MML fetch bbox.",
     )
     generate.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     generate.add_argument("--theme", default="maastotietokanta_kaikki")
@@ -1445,7 +1458,7 @@ def build_parser() -> argparse.ArgumentParser:
     common_render.add_argument(
         "--magnetic-declination-deg",
         default="auto",
-        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto. Rotates the rendered map frame.",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK. Rotates the rendered map frame.",
     )
     common_render.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
 

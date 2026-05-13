@@ -71,16 +71,23 @@ MML's `boundingBoxInput` is an axis-aligned rectangle in EPSG:3067 coordinates.
 That is not the same thing as the rectangle printed on an orienteering map when
 the map is oriented to magnetic north.
 
-In `mml-omap`, `--bbox` is treated as the intended paper map frame. The tool
-estimates magnetic declination from the map center and date by default, expands
-the MML download request to the smallest EPSG:3067 bbox that contains that
-rotated paper frame, clips output geometry back to the rotated frame, then
-renders the paper frame with magnetic north pointing up.
+In `mml-omap`, `--bbox` is treated as the intended paper map frame. By default,
+the tool estimates the MML-style total compass correction from the map center
+and date, expands the MML download request to the smallest EPSG:3067 bbox that
+contains that rotated paper frame, clips output geometry back to the rotated
+frame, then renders the paper frame with magnetic north pointing up.
 
-Automatic declination is a lightweight Finland-only estimate. Pass
-`--magnetic-declination-deg 10.5` when you want to use an authoritative value.
-Use `--magnetic-date YYYY-MM-DD` to calculate automatic declination for a
-specific date; otherwise the current date is used.
+MML's Erantokartta separates this into `NEK` (magnetic declination, or eranto),
+`NAK` (grid/projection north correction, or napaluvun korjaus), and `KOK = NEK
++ NAK` (total correction). Because this tool works in EPSG:3067 grid
+coordinates, automatic map rotation uses a lightweight Finland-only estimate of
+`KOK`, not just `NEK`. The authoritative MML service calculates values for 12 km
+x 12 km map-sheet centers from Finnish Meteorological Institute data:
+https://www.maanmittauslaitos.fi/kartat-ja-paikkatieto/kartat/erantokartta
+
+Pass `--magnetic-declination-deg 10.5` when you want to use an authoritative
+local value manually. Use `--magnetic-date YYYY-MM-DD` to calculate the automatic
+estimate for a specific date; otherwise the current date is used.
 
 The requested paper rectangle is limited to A3 at 1:15000, or 6300 m x 4455 m
 in either portrait or landscape orientation. Larger rectangles error before a
@@ -98,27 +105,43 @@ This project exists to combine the MML-specific job request, API-key auth,
 download handling, GeoPackage geometry decoding, and practical table-to-symbol
 mapping into one CLI.
 
-## Install
+## Install And Run With uv
 
-From a local checkout:
+From a local checkout, run the CLI through `uv`:
+
+```sh
+uv run mml-omap --help
+```
+
+You can also run the module form:
+
+```sh
+uv run python -m mml_omap.cli --help
+```
+
+Run tests with:
+
+```sh
+uv run python -m unittest discover -s tests
+```
+
+If you prefer a traditional install without `uv`:
 
 ```sh
 python3 -m pip install .
 ```
 
-Or run without installing:
+Then run:
 
 ```sh
-PYTHONPATH=src python3 -m mml_omap.cli --help
+mml-omap --help
 ```
 
-For development, use an isolated environment:
+For development with `uv`, sync the local environment and run tests:
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python3 -m pip install -e .
-python3 -m unittest discover -s tests
+uv sync
+uv run python -m unittest discover -s tests
 ```
 
 ## API Key Setup
@@ -154,10 +177,10 @@ mml-omap generate output.geojson \
   --bbox 385396,6672568,389620,6677160
 ```
 
-Magnetic declination is automatic by default. The generated GeoJSON is clipped
+Magnetic orientation is automatic by default. The generated GeoJSON is clipped
 to the rotated paper frame, while the MML request uses the enclosing EPSG:3067
-bbox. To override the estimate, pass a local declination in degrees. Positive
-values mean magnetic north is east of EPSG:3067/grid north:
+bbox. To override the estimate, pass the local total correction in degrees.
+Positive values mean magnetic north is east of EPSG:3067/grid north:
 
 ```sh
 mml-omap generate output.geojson \

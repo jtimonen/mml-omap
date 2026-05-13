@@ -13,6 +13,8 @@ from mml_omap.cli import (
     convert_gpkg_to_geojson,
     enclosing_grid_bbox,
     estimate_finland_magnetic_declination_deg,
+    estimate_finland_total_correction_deg,
+    meridian_convergence_deg,
     geojson_bbox,
     geojson_map_frame_declination,
     validate_orienteering_bbox_size,
@@ -94,6 +96,15 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertGreater(declination, 8.0)
         self.assertLess(declination, 14.0)
+
+    def test_total_correction_includes_grid_convergence(self) -> None:
+        date = dt.date(2026, 5, 13)
+        declination = estimate_finland_magnetic_declination_deg(385396, 6672568, date)
+        correction = estimate_finland_total_correction_deg(385396, 6672568, date)
+        convergence = meridian_convergence_deg(60.17387413161526, 24.93426897144729)
+
+        self.assertLess(convergence, 0.0)
+        self.assertAlmostEqual(correction, declination + convergence, places=6)
 
     def test_line_is_clipped_to_rotated_paper_frame(self) -> None:
         frame = OrientedFrame([0, 0, 1000, 1000], 10.0)

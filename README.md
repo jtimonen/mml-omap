@@ -296,6 +296,33 @@ is used. Render commands reuse that frame automatically, so the exact clipped
 paper rectangle and magnetic declination do not need to be retyped unless you
 want to override them.
 
+## Small Espoon Keskuspuisto Example
+
+This example fetches a 100 m x 100 m rectangle around an approximate point in
+Espoon keskuspuisto. The bbox is in EPSG:3067 meters:
+
+```sh
+uv run mml-omap generate espoo-keskuspuisto-100m.geojson \
+  --bbox 372622,6673688,372722,6673788
+```
+
+Render it to SVG:
+
+```sh
+uv run mml-omap render-svg \
+  espoo-keskuspuisto-100m.geojson \
+  espoo-keskuspuisto-100m.svg
+```
+
+Or render it to PDF at 1:5000:
+
+```sh
+uv run mml-omap render-pdf \
+  espoo-keskuspuisto-100m.geojson \
+  espoo-keskuspuisto-100m.pdf \
+  --scale 5000
+```
+
 ## Download Only
 
 ```sh

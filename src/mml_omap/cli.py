@@ -126,7 +126,16 @@ SYMBOL_STYLES = {
     "cliff": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
     "fence": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none"},
     "lake": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#b9e3f7"},
-    "swamp": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#ffffff", "svg_fill_pattern": "marsh"},
+    "swamp": {
+        "stroke": "none",
+        "stroke_width_mm": 0.0,
+        "fill": "none",
+        "svg_fill_pattern": "marsh",
+        "pattern_stroke": "#008fd5",
+        "pattern_stroke_width_mm": 0.12,
+        "pattern_spacing_mm": 1.0,
+        "pattern_dasharray": "1.4 0.55",
+    },
     "field": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#f2c84b"},
     "cultivated_land": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#f2c84b", "svg_fill_pattern": "cultivated_land"},
     "recreation_area": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "none"},
@@ -1382,6 +1391,19 @@ def svg_path_for_line(line: list[Any], transform: RenderTransform) -> str:
     return " ".join(commands)
 
 
+def polygon_part_mm_bbox(part: dict[str, Any], transform: RenderTransform) -> tuple[float, float, float, float] | None:
+    xs: list[float] = []
+    ys: list[float] = []
+    for ring in part.get("coordinates") or []:
+        for coordinate in ring:
+            x, y = transform.to_mm(coordinate)
+            xs.append(x)
+            ys.append(y)
+    if not xs or not ys:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def map_title(output_path: Path, explicit_title: str | None) -> str:
     return explicit_title if explicit_title else output_path.stem
 
@@ -1510,9 +1532,6 @@ def render_svg(
         ),
         (
             '<defs>'
-            '<pattern id="marsh" patternUnits="userSpaceOnUse" width="3.2" height="1.8">'
-            '<path d="M0 0.9 H3.2" stroke="#008fd5" stroke-width="0.25" stroke-dasharray="1.4 0.55"/>'
-            '</pattern>'
             '<pattern id="cultivated-land" patternUnits="userSpaceOnUse" width="2.0" height="2.0">'
             '<rect width="2.0" height="2.0" fill="#f2c84b"/>'
             '<circle cx="1.0" cy="1.0" r="0.12" fill="#000000"/>'
@@ -1529,17 +1548,35 @@ def render_svg(
         fill = style.get("fill", "none")
         stroke_width = float(style.get("stroke_width_mm", 0.18))
         fill_pattern = style.get("svg_fill_pattern")
-        if fill_pattern == "marsh":
-            fill = "url(#marsh)"
-        elif fill_pattern == "cultivated_land":
+        if fill_pattern == "cultivated_land":
             fill = "url(#cultivated-land)"
         for part in iter_geometry_parts(feature.get("geometry") or {}):
             if part["type"] == "Polygon":
                 path = " ".join(svg_path_for_ring(ring, transform) for ring in part.get("coordinates") or [])
-                lines.append(
-                    f'<path d="{path}" stroke="{stroke}" fill="{fill}" '
-                    f'stroke-width="{stroke_width:.3f}" fill-rule="evenodd"/>'
-                )
+                if fill_pattern == "marsh":
+                    clip_id = f"marsh-clip-{index}"
+                    bbox = polygon_part_mm_bbox(part, transform)
+                    lines.append(f'<clipPath id="{clip_id}"><path d="{path}" fill-rule="evenodd"/></clipPath>')
+                    if bbox is not None:
+                        min_x, min_y, max_x, max_y = bbox
+                        pattern_stroke = style.get("pattern_stroke", "#008fd5")
+                        pattern_width = float(style.get("pattern_stroke_width_mm", 0.12))
+                        pattern_spacing = max(float(style.get("pattern_spacing_mm", 1.0)), 0.1)
+                        pattern_dasharray = style.get("pattern_dasharray")
+                        dash_attr = f' stroke-dasharray="{pattern_dasharray}"' if pattern_dasharray else ""
+                        y = math.floor(min_y / pattern_spacing) * pattern_spacing
+                        while y <= max_y + pattern_spacing:
+                            lines.append(
+                                f'<line x1="{min_x:.3f}" y1="{y:.3f}" x2="{max_x:.3f}" y2="{y:.3f}" '
+                                f'stroke="{pattern_stroke}" stroke-width="{pattern_width:.3f}" '
+                                f'clip-path="url(#{clip_id})"{dash_attr}/>'
+                            )
+                            y += pattern_spacing
+                else:
+                    lines.append(
+                        f'<path d="{path}" stroke="{stroke}" fill="{fill}" '
+                        f'stroke-width="{stroke_width:.3f}" fill-rule="evenodd"/>'
+                    )
             elif part["type"] == "LineString":
                 path = svg_path_for_line(part.get("coordinates") or [], transform)
                 for layer in line_style_layers(style):

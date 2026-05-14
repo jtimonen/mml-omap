@@ -256,7 +256,11 @@ class OrienteeringBoundsTest(unittest.TestCase):
             svg = output.read_text(encoding="utf-8")
 
         self.assertIn('stroke="#000000" fill="#b9e3f7"', svg)
-        self.assertIn("url(#marsh)", svg)
+        self.assertIn('clip-path="url(#marsh-clip-', svg)
+        self.assertIn('stroke="#008fd5"', svg)
+        self.assertIn('stroke-width="0.120"', svg)
+        self.assertIn('stroke-dasharray="1.4 0.55"', svg)
+        self.assertNotIn('fill="url(#marsh)"', svg)
         self.assertIn("url(#cultivated-land)", svg)
         self.assertIn('stroke="#b68a57"', svg)
 

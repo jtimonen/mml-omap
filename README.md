@@ -270,7 +270,7 @@ set +a
 
 Bounding boxes are `min_x,min_y,max_x,max_y` in EPSG:3067 meters:
 
-```sh
+```
 uv run mml-omap generate output.geojson --bbox 385396,6672568,389620,6677160
 ```
 
@@ -279,13 +279,13 @@ to the rotated paper frame, while the MML request uses the enclosing EPSG:3067
 bbox. To override the estimate, pass the local total correction in degrees.
 Positive values mean magnetic north is east of EPSG:3067/grid north:
 
-```sh
+```
 uv run mml-omap generate output.geojson --bbox 385396,6672568,389620,6677160 --magnetic-declination-deg 10.5
 ```
 
 To use the automatic estimate for a specific date:
 
-```sh
+```
 uv run mml-omap generate output.geojson --bbox 385396,6672568,389620,6677160 --magnetic-date 2026-05-13
 ```
 
@@ -305,25 +305,31 @@ small for an orienteering map, so this is mostly a fast smoke test for download,
 conversion, clipping, contours, and rendering; use a larger bbox for a useful
 map preview.
 
-```sh
-uv run mml-omap generate espoo-keskuspuisto-100m.geojson --bbox 373498,6674761,373598,6674861
+```
+BBOX=373498,6674761,373598,6674861
+```
+
+Generate the GeoJSON:
+
+```
+uv run mml-omap generate espoo-keskuspuisto-100m.geojson --bbox "$BBOX"
 ```
 
 Render it to SVG:
 
-```sh
+```
 uv run mml-omap render-svg espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.svg --scale 5000
 ```
 
 Or render it to PDF at 1:5000:
 
-```sh
+```
 uv run mml-omap render-pdf espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.pdf --scale 5000
 ```
 
 ## Download Only
 
-```sh
+```
 uv run mml-omap download mml_area.zip --bbox 385396,6672568,389620,6677160
 ```
 
@@ -332,7 +338,7 @@ This command downloads the enclosing MML bbox for the rotated paper frame. Use
 
 ## Convert An Existing GeoPackage
 
-```sh
+```
 uv run mml-omap convert-gpkg maastotietokanta.gpkg output.geojson --bbox 385396,6672568,389620,6677160
 ```
 
@@ -340,27 +346,31 @@ uv run mml-omap convert-gpkg maastotietokanta.gpkg output.geojson --bbox 385396,
 
 Render SVG:
 
-```sh
+```
 uv run mml-omap render-svg output.geojson map.svg
 ```
 
 Render PNG:
 
-```sh
+```
 uv run mml-omap render-png output.geojson map.png --dpi 300
 ```
 
 Render PDF:
 
-```sh
+```
 uv run mml-omap render-pdf output.geojson map.pdf
 ```
 
 Rendering uses the GeoJSON extent by default. Pass `--bbox` to force the map
 frame:
 
-```sh
-uv run mml-omap render-pdf output.geojson map.pdf --bbox 385396,6672568,389620,6677160 --magnetic-declination-deg 10.5 --scale 10000 --margin-mm 5
+```
+BBOX=385396,6672568,389620,6677160
+```
+
+```
+uv run mml-omap render-pdf output.geojson map.pdf --bbox "$BBOX" --magnetic-declination-deg 10.5 --scale 10000 --margin-mm 5
 ```
 
 ## Mapping
@@ -402,7 +412,7 @@ Override or extend mappings with JSON:
 
 Use it with:
 
-```sh
+```
 uv run mml-omap convert-gpkg maastotietokanta.gpkg output.geojson --mapping mml_mapping.json
 ```
 

@@ -6,6 +6,7 @@ import argparse
 import datetime as dt
 from pathlib import Path
 
+import mml_omap.cli as cli
 from mml_omap.cli import (
     DEFAULT_TABLE_RULES,
     OrientedFrame,
@@ -22,6 +23,10 @@ from mml_omap.cli import (
     read_env_file_value,
     validate_orienteering_bbox_size,
 )
+
+
+def setUpModule() -> None:
+    cli.PROGRESS_ENABLED = False
 
 
 def make_gpkg(path: Path) -> None:

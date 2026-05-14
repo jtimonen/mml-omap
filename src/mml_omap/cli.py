@@ -119,6 +119,15 @@ def write_json(path: Path, data: Any) -> None:
         file.write("\n")
 
 
+PROGRESS_ENABLED = True
+
+
+def progress(message: str) -> None:
+    if not PROGRESS_ENABLED:
+        return
+    print(message, file=sys.stderr, flush=True)
+
+
 def read_env_file_value(name: str, path: Path = Path(".env")) -> str | None:
     if not path.exists():
         return None
@@ -197,6 +206,10 @@ def parse_orienteering_bbox(raw: str) -> list[float]:
     bbox = parse_bbox(raw)
     validate_orienteering_bbox_size(bbox)
     return bbox
+
+
+def format_bbox(bbox: list[float]) -> str:
+    return ",".join(f"{value:.1f}" for value in bbox)
 
 
 def bbox_center(bbox: list[float]) -> tuple[float, float]:
@@ -386,12 +399,18 @@ def post_json(url: str, api_key: str, payload: dict[str, Any]) -> dict[str, Any]
 def download_file(url: str, api_key: str, output_path: Path) -> None:
     request = urllib.request.Request(url, headers=auth_headers(api_key))
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    progress(f"Downloading MML result to {output_path}...")
+    total = 0
     with urllib.request.urlopen(request, context=https_context()) as response, output_path.open("wb") as file:
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
             file.write(chunk)
+            total += len(chunk)
+            if total // (10 * 1024 * 1024) != (total - len(chunk)) // (10 * 1024 * 1024):
+                progress(f"Downloaded {total / (1024 * 1024):.1f} MiB...")
+    progress(f"Downloaded {total / (1024 * 1024):.1f} MiB.")
 
 
 def submit_mml_bbox_job(
@@ -422,14 +441,19 @@ def submit_mml_bbox_job(
 
 def wait_for_job(job_url: str, api_key: str, *, poll_seconds: float, timeout_seconds: float) -> dict[str, Any]:
     started = time.monotonic()
+    last_state = ""
     while True:
         status = http_json(job_url, api_key)
         state = str(status.get("status", "")).lower()
+        elapsed = time.monotonic() - started
+        if state != last_state:
+            progress(f"MML job status: {state or 'unknown'} ({elapsed:.0f}s elapsed)")
+            last_state = state
         if state == "successful":
             return status
         if state in {"failed", "dismissed"}:
             raise RuntimeError(f"MML job {state}: {status.get('message', status)}")
-        if time.monotonic() - started > timeout_seconds:
+        if elapsed > timeout_seconds:
             raise TimeoutError(f"MML job did not finish within {timeout_seconds:.0f} seconds: {job_url}")
         time.sleep(poll_seconds)
 
@@ -492,7 +516,11 @@ def convert_gpkg_to_geojson(
             rule = table_rules.get(table)
             if rule is None and not include_unmapped:
                 continue
+            progress(f"Converting table {table}...")
+            rows_seen = 0
+            rows_kept = 0
             for row in feature_rows(connection, table, geometry_column):
+                rows_seen += 1
                 geometry = parse_gpkg_geometry(row[geometry_column])
                 if geometry is None or (bbox is not None and not geometry_intersects_bbox(geometry, bbox)):
                     continue
@@ -513,6 +541,10 @@ def convert_gpkg_to_geojson(
                     }
                 )
                 features.append({"type": "Feature", "properties": properties, "geometry": geometry})
+                rows_kept += 1
+                if rows_seen % 10000 == 0:
+                    progress(f"  {table}: scanned {rows_seen} rows, kept {rows_kept} features...")
+            progress(f"  {table}: scanned {rows_seen} rows, kept {rows_kept} features.")
     geojson = {
         "type": "FeatureCollection",
         "name": "mml-omap",
@@ -1034,6 +1066,8 @@ def svg_path_for_line(line: list[Any], transform: RenderTransform) -> str:
 
 
 def render_svg(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform) -> None:
+    features = geojson_features(geojson)
+    progress(f"Rendering SVG with {len(features)} features...")
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         (
@@ -1043,7 +1077,9 @@ def render_svg(geojson: dict[str, Any], output_path: Path, *, transform: RenderT
         ),
         '<rect x="0" y="0" width="100%" height="100%" fill="#ffffff"/>',
     ]
-    for feature in geojson_features(geojson):
+    for index, feature in enumerate(features, start=1):
+        if index % 10000 == 0:
+            progress(f"  rendered {index}/{len(features)} features...")
         style = feature_style(feature)
         stroke = style.get("stroke", "none")
         fill = style.get("fill", "none")
@@ -1072,6 +1108,7 @@ def render_svg(geojson: dict[str, Any], output_path: Path, *, transform: RenderT
     lines.append("</svg>")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    progress(f"Wrote SVG to {output_path}.")
 
 
 def color_to_rgb(raw: str) -> tuple[int, int, int] | None:
@@ -1202,6 +1239,8 @@ def write_png(path: Path, width: int, height: int, pixels: bytearray) -> None:
 
 
 def render_png(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform, dpi: int) -> None:
+    features = geojson_features(geojson)
+    progress(f"Rendering PNG with {len(features)} features at {dpi} dpi...")
     width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
     height = max(1, int(round(transform.page_height_mm / 25.4 * dpi)))
     px_per_mm = dpi / 25.4
@@ -1211,7 +1250,9 @@ def render_png(geojson: dict[str, Any], output_path: Path, *, transform: RenderT
         x, y = transform.to_mm(coordinate)
         return int(round(x * px_per_mm)), int(round(y * px_per_mm))
 
-    for feature in geojson_features(geojson):
+    for index, feature in enumerate(features, start=1):
+        if index % 10000 == 0:
+            progress(f"  rendered {index}/{len(features)} features...")
         style = feature_style(feature)
         stroke = color_to_rgb(str(style.get("stroke", "none")))
         fill = color_to_rgb(str(style.get("fill", "none")))
@@ -1233,6 +1274,7 @@ def render_png(geojson: dict[str, Any], output_path: Path, *, transform: RenderT
                 color = fill or stroke or (0, 0, 0)
                 draw_circle(canvas, width, height, to_px(part.get("coordinates")), max(2, stroke_px * 2), color)
     write_png(output_path, width, height, canvas)
+    progress(f"Wrote PNG to {output_path}.")
 
 
 def pdf_color_operator(color: tuple[int, int, int], stroke: bool) -> str:
@@ -1247,10 +1289,14 @@ def pdf_point(transform: RenderTransform, coordinate: Any) -> tuple[float, float
 
 
 def render_pdf(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform) -> None:
+    features = geojson_features(geojson)
+    progress(f"Rendering PDF with {len(features)} features...")
     page_width = transform.page_width_mm * 72.0 / 25.4
     page_height = transform.page_height_mm * 72.0 / 25.4
     commands = ["1 1 1 rg", f"0 0 {page_width:.3f} {page_height:.3f} re", "f"]
-    for feature in geojson_features(geojson):
+    for index, feature in enumerate(features, start=1):
+        if index % 10000 == 0:
+            progress(f"  rendered {index}/{len(features)} features...")
         style = feature_style(feature)
         stroke = color_to_rgb(str(style.get("stroke", "none")))
         fill = color_to_rgb(str(style.get("fill", "none")))
@@ -1321,6 +1367,7 @@ def render_pdf(geojson: dict[str, Any], output_path: Path, *, transform: RenderT
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(bytes(output))
+    progress(f"Wrote PDF to {output_path}.")
 
 
 def command_download(args: argparse.Namespace) -> int:
@@ -1332,18 +1379,25 @@ def command_download(args: argparse.Namespace) -> int:
         magnetic_date=args.magnetic_date,
     )
     mml_bbox = enclosing_grid_bbox(bbox, magnetic_declination_deg)
+    progress(
+        "Submitting MML bbox job "
+        f"for paper bbox {format_bbox(bbox)}; fetch bbox {format_bbox(mml_bbox)}; "
+        f"KOK {magnetic_declination_deg:.2f} deg."
+    )
     job_url = submit_mml_bbox_job(
         api_key=api_key,
         bbox=mml_bbox,
         theme=args.theme,
         base_url=args.base_url.rstrip("/"),
     )
+    progress(f"MML job URL: {job_url}")
     status = wait_for_job(
         job_url,
         api_key,
         poll_seconds=args.poll_seconds,
         timeout_seconds=args.timeout_seconds,
     )
+    progress("Fetching MML result metadata...")
     results = http_json(results_url_from_status(status, job_url), api_key)
     download_url = pick_download_url(results)
     download_file(download_url, api_key, Path(args.output))
@@ -1397,7 +1451,9 @@ def command_generate(args: argparse.Namespace) -> int:
     output = Path(args.output)
     work_dir = Path(args.work_dir)
     archive_path = work_dir / (output.stem + ".zip")
+    progress(f"Generating {output}...")
     command_download(download_args_for_generate(args, archive_path))
+    progress(f"Extracting GeoPackage from {archive_path}...")
     gpkg_path = extract_first_gpkg(archive_path, work_dir / output.stem)
     rules = load_table_rules(Path(args.mapping) if args.mapping else None)
     paper_bbox = parse_orienteering_bbox(args.bbox)
@@ -1419,6 +1475,7 @@ def command_generate(args: argparse.Namespace) -> int:
             "magnetic_date": magnetic_date.isoformat(),
         },
     )
+    progress(f"Writing GeoJSON to {output}...")
     write_json(output, geojson)
     print(f"Wrote {len(geojson['features'])} features from {gpkg_path}.")
     return 0

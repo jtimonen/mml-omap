@@ -400,10 +400,30 @@ download archives, GeoPackages, rendered maps, local build folders, caches,
 virtual environments, and `.env` files. Keep curated fixtures or examples in a
 dedicated tracked directory and unignore them explicitly if needed.
 
+## Performance Notes
+
+`generate` can be slow because it waits for MML's remote OGC API Processes job,
+downloads a GeoPackage zip, scans multiple GeoPackage tables row by row, decodes
+WKB geometries in Python, clips them to the rotated paper frame, and writes
+pretty-printed GeoJSON. Render commands can also be slow for large extracts
+because the current renderers walk every feature in pure Python.
+
+The CLI prints progress to stderr for the major phases: MML job submission and
+polling, result download size, GeoPackage extraction, per-table conversion, and
+render feature counts.
+
 ## Future Development Plans
 
 Near-term work toward real MML-only orienteering map generation:
 
+- Use GeoPackage spatial indexes and SQL bbox filters before Python WKB
+  decoding.
+- Add optional compact GeoJSON output to avoid pretty-print overhead for large
+  files.
+- Cache extracted GeoPackages and converted intermediate GeoJSON by bbox/theme.
+- Move expensive clipping and rendering loops to vectorized libraries such as
+  Shapely/pyogrio/GeoPandas or another geometry engine.
+- Stream SVG output instead of building the full document in memory.
 - Improve automatic magnetic declination by replacing the lightweight
   Finland-only estimate with an authoritative model or service.
 - Improve rotated-frame clipping for complex polygons with holes and topology

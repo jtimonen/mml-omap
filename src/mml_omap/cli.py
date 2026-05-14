@@ -108,6 +108,7 @@ SYMBOL_STYLES = {
 
 DEFAULT_STYLE = {"stroke": "#444444", "stroke_width_mm": 0.18, "fill": "none"}
 DEFAULT_NORTH_LINE_SPACING_M = 300.0
+DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 1.0
 
 SYMBOL_RENDER_ORDER = {
     "field": 100,
@@ -1080,6 +1081,78 @@ def sorted_render_features(features: list[dict[str, Any]]) -> list[dict[str, Any
     ]
 
 
+def line_parts_from_geometry(geometry: dict[str, Any]) -> list[list[Any]]:
+    geometry_type = geometry.get("type")
+    if geometry_type == "LineString":
+        return [geometry.get("coordinates") or []]
+    if geometry_type == "MultiLineString":
+        return list(geometry.get("coordinates") or [])
+    return []
+
+
+def line_endpoint_distance(a: Any, b: Any) -> float:
+    return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
+
+
+def append_connected_line(base: list[Any], candidate: list[Any], tolerance_m: float) -> list[Any] | None:
+    if not base or not candidate:
+        return None
+    options = [
+        (line_endpoint_distance(base[-1], candidate[0]), base + candidate[1:]),
+        (line_endpoint_distance(base[-1], candidate[-1]), base + list(reversed(candidate[:-1]))),
+        (line_endpoint_distance(base[0], candidate[-1]), candidate[:-1] + base),
+        (line_endpoint_distance(base[0], candidate[0]), list(reversed(candidate[1:])) + base),
+    ]
+    distance, merged = min(options, key=lambda item: item[0])
+    return merged if distance <= tolerance_m else None
+
+
+def merge_lines_by_endpoint(lines: list[list[Any]], tolerance_m: float) -> list[list[Any]]:
+    merged = [list(line) for line in lines if len(line) > 1]
+    changed = True
+    while changed:
+        changed = False
+        for index in range(len(merged)):
+            if changed:
+                break
+            for other_index in range(index + 1, len(merged)):
+                connected = append_connected_line(merged[index], merged[other_index], tolerance_m)
+                if connected is None:
+                    continue
+                merged[index] = connected
+                del merged[other_index]
+                changed = True
+                break
+    return merged
+
+
+def merge_contour_features(features: list[dict[str, Any]], tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M) -> list[dict[str, Any]]:
+    if tolerance_m <= 0:
+        return features
+    output: list[dict[str, Any]] = []
+    contour_groups: dict[Any, dict[str, Any]] = {}
+    for feature in features:
+        if feature_symbol(feature) != "contour":
+            output.append(feature)
+            continue
+        properties = feature.get("properties") or {}
+        key = properties.get("korkeusarvo")
+        group = contour_groups.setdefault(key, {"template": feature, "lines": []})
+        group["lines"].extend(line_parts_from_geometry(feature.get("geometry") or {}))
+    for group in contour_groups.values():
+        lines = merge_lines_by_endpoint(group["lines"], tolerance_m)
+        if not lines:
+            continue
+        template = group["template"]
+        properties = dict(template.get("properties") or {})
+        properties["merged_parts"] = len(group["lines"])
+        geometry = {"type": "LineString", "coordinates": lines[0]}
+        if len(lines) > 1:
+            geometry = {"type": "MultiLineString", "coordinates": lines}
+        output.append({"type": "Feature", "properties": properties, "geometry": geometry})
+    return output
+
+
 def iter_geometry_parts(geometry: dict[str, Any]) -> list[dict[str, Any]]:
     geometry_type = geometry.get("type")
     coordinates = geometry.get("coordinates")
@@ -1122,9 +1195,47 @@ def map_title(output_path: Path, explicit_title: str | None) -> str:
     return explicit_title if explicit_title else output_path.stem
 
 
-def map_footer_text(transform: RenderTransform, map_maker: str) -> str:
+def contour_interval_text(contour_interval_m: float) -> str:
+    if contour_interval_m <= 0:
+        return "Contours: MML source"
+    if float(contour_interval_m).is_integer():
+        return f"Contours {int(contour_interval_m)} m"
+    return f"Contours {contour_interval_m:g} m"
+
+
+def infer_contour_interval_m(geojson: dict[str, Any]) -> float | None:
+    values: list[float] = []
+    for feature in geojson_features(geojson):
+        if feature_symbol(feature) != "contour":
+            continue
+        raw_value = (feature.get("properties") or {}).get("korkeusarvo")
+        if isinstance(raw_value, (int, float)):
+            value = float(raw_value)
+            if abs(value) > 1000:
+                value /= 1000.0
+            values.append(value)
+    unique = sorted(set(values))
+    differences = [
+        round(unique[index] - unique[index - 1], 6)
+        for index in range(1, len(unique))
+        if unique[index] > unique[index - 1]
+    ]
+    return min(differences) if differences else None
+
+
+def resolve_contour_interval_m(raw_value: str, geojson: dict[str, Any]) -> float:
+    if raw_value.lower() == "auto":
+        return infer_contour_interval_m(geojson) or 5.0
+    try:
+        return float(raw_value)
+    except ValueError as exc:
+        raise ValueError("--contour-interval-m must be a number of meters or auto") from exc
+
+
+def map_footer_text(transform: RenderTransform, map_maker: str, contour_interval_m: float) -> str:
     return (
         f"Scale 1:{transform.scale} | {map_maker} | "
+        f"{contour_interval_text(contour_interval_m)} | "
         f"KOK {transform.magnetic_declination_deg:.2f} deg | EPSG:3067"
     )
 
@@ -1151,6 +1262,7 @@ def append_svg_layout(
     *,
     map_title_text: str | None,
     map_maker: str,
+    contour_interval_m: float,
     north_line_spacing_m: float,
 ) -> None:
     for x in north_line_x_positions(transform, north_line_spacing_m):
@@ -1167,7 +1279,7 @@ def append_svg_layout(
         f'fill="none" stroke="#000000" stroke-width="0.120"/>'
     )
     title = html.escape(map_title(output_path, map_title_text))
-    footer = html.escape(map_footer_text(transform, map_maker))
+    footer = html.escape(map_footer_text(transform, map_maker, contour_interval_m))
     lines.append(
         f'<text x="{transform.margin_mm:.3f}" y="{max(transform.margin_mm - 1.2, 3.0):.3f}" '
         f'font-family="Arial, Helvetica, sans-serif" font-size="3.2" fill="#000000">{title}</text>'
@@ -1192,9 +1304,11 @@ def render_svg(
     include_layout: bool = True,
     map_title_text: str | None = None,
     map_maker: str = "mml-omap",
+    contour_interval_m: float = 5.0,
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+    contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
-    features = sorted_render_features(geojson_features(geojson))
+    features = sorted_render_features(merge_contour_features(geojson_features(geojson), contour_merge_tolerance_m))
     progress(f"Rendering SVG with {len(features)} features...")
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -1240,6 +1354,7 @@ def render_svg(
             transform,
             map_title_text=map_title_text,
             map_maker=map_maker,
+            contour_interval_m=contour_interval_m,
             north_line_spacing_m=north_line_spacing_m,
         )
     lines.append("</svg>")
@@ -1383,8 +1498,9 @@ def render_png(
     dpi: int,
     include_layout: bool = True,
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+    contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
-    features = sorted_render_features(geojson_features(geojson))
+    features = sorted_render_features(merge_contour_features(geojson_features(geojson), contour_merge_tolerance_m))
     progress(f"Rendering PNG with {len(features)} features at {dpi} dpi...")
     width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
     height = max(1, int(round(transform.page_height_mm / 25.4 * dpi)))
@@ -1466,6 +1582,7 @@ def append_pdf_layout(
     *,
     map_title_text: str | None,
     map_maker: str,
+    contour_interval_m: float,
     north_line_spacing_m: float,
 ) -> None:
     purple = (111, 45, 189)
@@ -1486,7 +1603,14 @@ def append_pdf_layout(
     )
     commands.append("S")
     append_pdf_text(commands, transform.margin_mm, max(transform.margin_mm - 1.2, 3.0), 9.0, map_title(output_path, map_title_text), transform)
-    append_pdf_text(commands, transform.margin_mm, transform.page_height_mm - 1.5, 7.5, map_footer_text(transform, map_maker), transform)
+    append_pdf_text(
+        commands,
+        transform.margin_mm,
+        transform.page_height_mm - 1.5,
+        7.5,
+        map_footer_text(transform, map_maker, contour_interval_m),
+        transform,
+    )
     append_pdf_text(commands, transform.page_width_mm - transform.margin_mm - 4.0, max(transform.margin_mm - 1.0, 4.5), 9.0, "N", transform)
 
 
@@ -1498,9 +1622,11 @@ def render_pdf(
     include_layout: bool = True,
     map_title_text: str | None = None,
     map_maker: str = "mml-omap",
+    contour_interval_m: float = 5.0,
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+    contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
-    features = sorted_render_features(geojson_features(geojson))
+    features = sorted_render_features(merge_contour_features(geojson_features(geojson), contour_merge_tolerance_m))
     progress(f"Rendering PDF with {len(features)} features...")
     page_width = transform.page_width_mm * 72.0 / 25.4
     page_height = transform.page_height_mm * 72.0 / 25.4
@@ -1555,6 +1681,7 @@ def render_pdf(
             transform,
             map_title_text=map_title_text,
             map_maker=map_maker,
+            contour_interval_m=contour_interval_m,
             north_line_spacing_m=north_line_spacing_m,
         )
     content = ("\n".join(commands) + "\n").encode("latin-1", "replace")
@@ -1733,14 +1860,17 @@ def clip_geojson_for_render(args: argparse.Namespace, geojson: dict[str, Any], t
 def command_render_svg(args: argparse.Namespace) -> int:
     geojson = read_json(Path(args.input))
     transform = make_render_transform(args, geojson)
+    clipped_geojson = clip_geojson_for_render(args, geojson, transform)
     render_svg(
-        clip_geojson_for_render(args, geojson, transform),
+        clipped_geojson,
         Path(args.output),
         transform=transform,
         include_layout=not args.no_layout,
         map_title_text=args.map_title,
         map_maker=args.map_maker,
+        contour_interval_m=resolve_contour_interval_m(args.contour_interval_m, clipped_geojson),
         north_line_spacing_m=args.north_line_spacing_m,
+        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
     return 0
 
@@ -1748,13 +1878,15 @@ def command_render_svg(args: argparse.Namespace) -> int:
 def command_render_png(args: argparse.Namespace) -> int:
     geojson = read_json(Path(args.input))
     transform = make_render_transform(args, geojson)
+    clipped_geojson = clip_geojson_for_render(args, geojson, transform)
     render_png(
-        clip_geojson_for_render(args, geojson, transform),
+        clipped_geojson,
         Path(args.output),
         transform=transform,
         dpi=args.dpi,
         include_layout=not args.no_layout,
         north_line_spacing_m=args.north_line_spacing_m,
+        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
     return 0
 
@@ -1762,14 +1894,17 @@ def command_render_png(args: argparse.Namespace) -> int:
 def command_render_pdf(args: argparse.Namespace) -> int:
     geojson = read_json(Path(args.input))
     transform = make_render_transform(args, geojson)
+    clipped_geojson = clip_geojson_for_render(args, geojson, transform)
     render_pdf(
-        clip_geojson_for_render(args, geojson, transform),
+        clipped_geojson,
         Path(args.output),
         transform=transform,
         include_layout=not args.no_layout,
         map_title_text=args.map_title,
         map_maker=args.map_maker,
+        contour_interval_m=resolve_contour_interval_m(args.contour_interval_m, clipped_geojson),
         north_line_spacing_m=args.north_line_spacing_m,
+        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
     return 0
 
@@ -1838,6 +1973,8 @@ def build_parser() -> argparse.ArgumentParser:
     common_render.add_argument("--margin-mm", type=float, default=5.0)
     common_render.add_argument("--map-title", help="Title text printed in SVG/PDF layout metadata.")
     common_render.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG/PDF layout metadata.")
+    common_render.add_argument("--contour-interval-m", default="auto", help="Contour interval label for SVG/PDF layout metadata, or auto.")
+    common_render.add_argument("--contour-merge-tolerance-m", type=float, default=DEFAULT_CONTOUR_MERGE_TOLERANCE_M)
     common_render.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
     common_render.add_argument("--no-layout", action="store_true", help="Render only map geometry, without title, footer, frame, or north lines.")
     common_render.add_argument(

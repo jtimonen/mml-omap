@@ -58,7 +58,9 @@ Current source usage by feature type:
 
 - Contours: read from the MML topographic database GeoPackage table
   `korkeuskayra` and rendered as `contour`. The tool does not currently derive
-  contours directly from laser scanning data or an elevation model.
+  contours directly from laser scanning data or an elevation model. The render
+  layout infers the contour interval from `korkeusarvo` values when available;
+  for example, a 2500-unit step is labelled as `Contours 2.5 m`.
 - Vegetation: not meaningfully generated yet. Some open or semi-open land-cover
   tables such as `maatalousmaa`, `niitty`, `muuavoinalue`, and `puisto` are
   mapped as `field`, and `kallioalue` is mapped as `open_rock`.
@@ -299,17 +301,17 @@ want to override them.
 
 ## Espoon Keskuspuisto Example
 
-This example fetches a 1 km x 500 m rectangle around an approximate point in
-Espoon keskuspuisto. The bbox is in EPSG:3067 meters.
+This example fetches an approximately 2.05 km x 1.43 km rectangle around an
+approximate point in Espoon keskuspuisto. The bbox is in EPSG:3067 meters.
 
 Generate the GeoJSON:
-`uv run mml-omap generate espoo-keskuspuisto-1km-500m.geojson --bbox 373048,6674561,374048,6675061`
+`uv run mml-omap generate espoo-keskuspuisto-2p05km-1p43km.geojson --bbox 372523,6674094,374573,6675528`
 
 Render it to SVG:
-`uv run mml-omap render-svg espoo-keskuspuisto-1km-500m.geojson espoo-keskuspuisto-1km-500m.svg --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"`
+`uv run mml-omap render-svg espoo-keskuspuisto-2p05km-1p43km.geojson espoo-keskuspuisto-2p05km-1p43km.svg --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"`
 
 Or render it to PDF at 1:5000:
-`uv run mml-omap render-pdf espoo-keskuspuisto-1km-500m.geojson espoo-keskuspuisto-1km-500m.pdf --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"`
+`uv run mml-omap render-pdf espoo-keskuspuisto-2p05km-1p43km.geojson espoo-keskuspuisto-2p05km-1p43km.pdf --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"`
 
 ## Download Only
 
@@ -354,10 +356,15 @@ uv run mml-omap render-pdf output.geojson map.pdf --bbox 385396,6672568,389620,6
 ```
 
 SVG and PDF renders include a simple map layout by default: map title, scale,
-map maker text, KOK correction, EPSG code, a paper-frame border, and
-magnetic-north alignment lines. Use `--map-title`, `--map-maker`, and
-`--north-line-spacing-m` to adjust those labels and north-line spacing. Use
-`--no-layout` for geometry-only output.
+map maker text, contour interval, KOK correction, EPSG code, a paper-frame
+border, and magnetic-north alignment lines. Use `--map-title`, `--map-maker`,
+`--contour-interval-m`, and `--north-line-spacing-m` to adjust those labels and
+north-line spacing. Use `--no-layout` for geometry-only output.
+
+Render commands also merge contour fragments with the same `korkeusarvo` when
+their endpoints touch within `--contour-merge-tolerance-m` meters. This removes
+many artificial-looking breaks from MML contour line fragments without changing
+the intermediate GeoJSON.
 
 ## Mapping
 

@@ -20,6 +20,8 @@ from mml_omap.cli import (
     meridian_convergence_deg,
     geojson_bbox,
     geojson_map_frame_declination,
+    infer_contour_interval_m,
+    merge_contour_features,
     read_env_file_value,
     render_svg,
     validate_orienteering_bbox_size,
@@ -176,9 +178,42 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertIn("Test map", svg)
         self.assertIn("Scale 1:5000", svg)
+        self.assertIn("Contours 5 m", svg)
         self.assertIn("Test maker", svg)
         self.assertIn("KOK 8.50 deg", svg)
         self.assertIn('stroke="#6f2dbd"', svg)
+
+    def test_contour_fragments_with_same_height_are_merged_for_rendering(self) -> None:
+        features = [
+            {
+                "type": "Feature",
+                "properties": {"symbol": "contour", "korkeusarvo": 25000},
+                "geometry": {"type": "LineString", "coordinates": [[0, 0], [10, 0]]},
+            },
+            {
+                "type": "Feature",
+                "properties": {"symbol": "contour", "korkeusarvo": 25000},
+                "geometry": {"type": "LineString", "coordinates": [[10.5, 0], [20, 0]]},
+            },
+        ]
+
+        merged = merge_contour_features(features, tolerance_m=1.0)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["geometry"]["type"], "LineString")
+        self.assertEqual(merged[0]["geometry"]["coordinates"], [[0, 0], [10, 0], [20, 0]])
+
+    def test_contour_interval_is_inferred_from_mml_height_values(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "properties": {"symbol": "contour", "korkeusarvo": 15000}, "geometry": None},
+                {"type": "Feature", "properties": {"symbol": "contour", "korkeusarvo": 17500}, "geometry": None},
+                {"type": "Feature", "properties": {"symbol": "contour", "korkeusarvo": 20000}, "geometry": None},
+            ],
+        }
+
+        self.assertEqual(infer_contour_interval_m(geojson), 2.5)
 
 
 class EnvFileTest(unittest.TestCase):

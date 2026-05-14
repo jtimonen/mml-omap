@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import html
 import json
 import math
 import os
@@ -106,6 +107,7 @@ SYMBOL_STYLES = {
 }
 
 DEFAULT_STYLE = {"stroke": "#444444", "stroke_width_mm": 0.18, "fill": "none"}
+DEFAULT_NORTH_LINE_SPACING_M = 300.0
 
 SYMBOL_RENDER_ORDER = {
     "field": 100,
@@ -1116,7 +1118,82 @@ def svg_path_for_line(line: list[Any], transform: RenderTransform) -> str:
     return " ".join(commands)
 
 
-def render_svg(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform) -> None:
+def map_title(output_path: Path, explicit_title: str | None) -> str:
+    return explicit_title if explicit_title else output_path.stem
+
+
+def map_footer_text(transform: RenderTransform, map_maker: str) -> str:
+    return (
+        f"Scale 1:{transform.scale} | {map_maker} | "
+        f"KOK {transform.magnetic_declination_deg:.2f} deg | EPSG:3067"
+    )
+
+
+def north_line_x_positions(transform: RenderTransform, spacing_m: float) -> list[float]:
+    if spacing_m <= 0:
+        return []
+    spacing_mm = spacing_m * 1000.0 / transform.scale
+    if spacing_mm <= 0:
+        return []
+    positions: list[float] = []
+    x = transform.margin_mm + spacing_mm
+    max_x = transform.margin_mm + transform.map_width_mm
+    while x < max_x - 0.001:
+        positions.append(x)
+        x += spacing_mm
+    return positions
+
+
+def append_svg_layout(
+    lines: list[str],
+    output_path: Path,
+    transform: RenderTransform,
+    *,
+    map_title_text: str | None,
+    map_maker: str,
+    north_line_spacing_m: float,
+) -> None:
+    for x in north_line_x_positions(transform, north_line_spacing_m):
+        lines.append(
+            f'<line x1="{x:.3f}" y1="{transform.margin_mm:.3f}" '
+            f'x2="{x:.3f}" y2="{transform.margin_mm + transform.map_height_mm:.3f}" '
+            f'stroke="#6f2dbd" stroke-width="0.180"/>'
+        )
+    frame_x = transform.margin_mm
+    frame_y = transform.margin_mm
+    lines.append(
+        f'<rect x="{frame_x:.3f}" y="{frame_y:.3f}" '
+        f'width="{transform.map_width_mm:.3f}" height="{transform.map_height_mm:.3f}" '
+        f'fill="none" stroke="#000000" stroke-width="0.120"/>'
+    )
+    title = html.escape(map_title(output_path, map_title_text))
+    footer = html.escape(map_footer_text(transform, map_maker))
+    lines.append(
+        f'<text x="{transform.margin_mm:.3f}" y="{max(transform.margin_mm - 1.2, 3.0):.3f}" '
+        f'font-family="Arial, Helvetica, sans-serif" font-size="3.2" fill="#000000">{title}</text>'
+    )
+    lines.append(
+        f'<text x="{transform.margin_mm:.3f}" y="{transform.page_height_mm - 1.5:.3f}" '
+        f'font-family="Arial, Helvetica, sans-serif" font-size="2.6" fill="#000000">{footer}</text>'
+    )
+    north_x = transform.page_width_mm - transform.margin_mm - 4.0
+    north_y = max(transform.margin_mm - 1.0, 4.5)
+    lines.append(
+        f'<text x="{north_x:.3f}" y="{north_y:.3f}" text-anchor="middle" '
+        f'font-family="Arial, Helvetica, sans-serif" font-size="3.0" fill="#000000">N</text>'
+    )
+
+
+def render_svg(
+    geojson: dict[str, Any],
+    output_path: Path,
+    *,
+    transform: RenderTransform,
+    include_layout: bool = True,
+    map_title_text: str | None = None,
+    map_maker: str = "mml-omap",
+    north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+) -> None:
     features = sorted_render_features(geojson_features(geojson))
     progress(f"Rendering SVG with {len(features)} features...")
     lines = [
@@ -1156,6 +1233,15 @@ def render_svg(geojson: dict[str, Any], output_path: Path, *, transform: RenderT
                 radius = max(stroke_width * 2.0, 0.35)
                 point_fill = fill if fill != "none" else stroke
                 lines.append(f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{radius:.3f}" fill="{point_fill}"/>')
+    if include_layout:
+        append_svg_layout(
+            lines,
+            output_path,
+            transform,
+            map_title_text=map_title_text,
+            map_maker=map_maker,
+            north_line_spacing_m=north_line_spacing_m,
+        )
     lines.append("</svg>")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1289,7 +1375,15 @@ def write_png(path: Path, width: int, height: int, pixels: bytearray) -> None:
     path.write_bytes(bytes(png))
 
 
-def render_png(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform, dpi: int) -> None:
+def render_png(
+    geojson: dict[str, Any],
+    output_path: Path,
+    *,
+    transform: RenderTransform,
+    dpi: int,
+    include_layout: bool = True,
+    north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+) -> None:
     features = sorted_render_features(geojson_features(geojson))
     progress(f"Rendering PNG with {len(features)} features at {dpi} dpi...")
     width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
@@ -1324,6 +1418,13 @@ def render_png(geojson: dict[str, Any], output_path: Path, *, transform: RenderT
             elif part["type"] == "Point":
                 color = fill or stroke or (0, 0, 0)
                 draw_circle(canvas, width, height, to_px(part.get("coordinates")), max(2, stroke_px * 2), color)
+    if include_layout:
+        purple = (111, 45, 189)
+        for x_mm in north_line_x_positions(transform, north_line_spacing_m):
+            x = int(round(x_mm * px_per_mm))
+            y0 = int(round(transform.margin_mm * px_per_mm))
+            y1 = int(round((transform.margin_mm + transform.map_height_mm) * px_per_mm))
+            draw_line(canvas, width, height, (x, y0), (x, y1), purple, max(1, int(round(0.18 * px_per_mm))))
     write_png(output_path, width, height, canvas)
     progress(f"Wrote PNG to {output_path}.")
 
@@ -1339,7 +1440,66 @@ def pdf_point(transform: RenderTransform, coordinate: Any) -> tuple[float, float
     return x_mm * scale, (transform.page_height_mm - y_mm) * scale
 
 
-def render_pdf(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform) -> None:
+def pdf_mm(x_mm: float, y_mm: float, transform: RenderTransform) -> tuple[float, float]:
+    scale = 72.0 / 25.4
+    return x_mm * scale, (transform.page_height_mm - y_mm) * scale
+
+
+def pdf_escape_text(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def append_pdf_text(commands: list[str], x_mm: float, y_mm: float, size_pt: float, text: str, transform: RenderTransform) -> None:
+    x, y = pdf_mm(x_mm, y_mm, transform)
+    commands.append("0 0 0 rg")
+    commands.append("BT")
+    commands.append(f"/F1 {size_pt:.2f} Tf")
+    commands.append(f"{x:.3f} {y:.3f} Td")
+    commands.append(f"({pdf_escape_text(text)}) Tj")
+    commands.append("ET")
+
+
+def append_pdf_layout(
+    commands: list[str],
+    output_path: Path,
+    transform: RenderTransform,
+    *,
+    map_title_text: str | None,
+    map_maker: str,
+    north_line_spacing_m: float,
+) -> None:
+    purple = (111, 45, 189)
+    commands.append(pdf_color_operator(purple, stroke=True))
+    commands.append(f"{0.18 * 72.0 / 25.4:.3f} w")
+    for x_mm in north_line_x_positions(transform, north_line_spacing_m):
+        x0, y0 = pdf_mm(x_mm, transform.margin_mm, transform)
+        x1, y1 = pdf_mm(x_mm, transform.margin_mm + transform.map_height_mm, transform)
+        commands.append(f"{x0:.3f} {y0:.3f} m")
+        commands.append(f"{x1:.3f} {y1:.3f} l")
+        commands.append("S")
+    commands.append("0 0 0 RG")
+    commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
+    x, y = pdf_mm(transform.margin_mm, transform.margin_mm + transform.map_height_mm, transform)
+    commands.append(
+        f"{x:.3f} {y:.3f} {transform.map_width_mm * 72.0 / 25.4:.3f} "
+        f"{transform.map_height_mm * 72.0 / 25.4:.3f} re"
+    )
+    commands.append("S")
+    append_pdf_text(commands, transform.margin_mm, max(transform.margin_mm - 1.2, 3.0), 9.0, map_title(output_path, map_title_text), transform)
+    append_pdf_text(commands, transform.margin_mm, transform.page_height_mm - 1.5, 7.5, map_footer_text(transform, map_maker), transform)
+    append_pdf_text(commands, transform.page_width_mm - transform.margin_mm - 4.0, max(transform.margin_mm - 1.0, 4.5), 9.0, "N", transform)
+
+
+def render_pdf(
+    geojson: dict[str, Any],
+    output_path: Path,
+    *,
+    transform: RenderTransform,
+    include_layout: bool = True,
+    map_title_text: str | None = None,
+    map_maker: str = "mml-omap",
+    north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+) -> None:
     features = sorted_render_features(geojson_features(geojson))
     progress(f"Rendering PDF with {len(features)} features...")
     page_width = transform.page_width_mm * 72.0 / 25.4
@@ -1388,12 +1548,22 @@ def render_pdf(geojson: dict[str, Any], output_path: Path, *, transform: RenderT
                 radius = max(stroke_width * 2.0, 1.0)
                 commands.append(f"{x - radius:.3f} {y - radius:.3f} {radius * 2:.3f} {radius * 2:.3f} re")
                 commands.append("f")
-    content = ("\n".join(commands) + "\n").encode("ascii")
+    if include_layout:
+        append_pdf_layout(
+            commands,
+            output_path,
+            transform,
+            map_title_text=map_title_text,
+            map_maker=map_maker,
+            north_line_spacing_m=north_line_spacing_m,
+        )
+    content = ("\n".join(commands) + "\n").encode("latin-1", "replace")
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         (
             f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.3f} {page_height:.3f}] "
+            f"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> "
             f"/Contents 4 0 R >>"
         ).encode("ascii"),
         b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"endstream",
@@ -1563,21 +1733,44 @@ def clip_geojson_for_render(args: argparse.Namespace, geojson: dict[str, Any], t
 def command_render_svg(args: argparse.Namespace) -> int:
     geojson = read_json(Path(args.input))
     transform = make_render_transform(args, geojson)
-    render_svg(clip_geojson_for_render(args, geojson, transform), Path(args.output), transform=transform)
+    render_svg(
+        clip_geojson_for_render(args, geojson, transform),
+        Path(args.output),
+        transform=transform,
+        include_layout=not args.no_layout,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        north_line_spacing_m=args.north_line_spacing_m,
+    )
     return 0
 
 
 def command_render_png(args: argparse.Namespace) -> int:
     geojson = read_json(Path(args.input))
     transform = make_render_transform(args, geojson)
-    render_png(clip_geojson_for_render(args, geojson, transform), Path(args.output), transform=transform, dpi=args.dpi)
+    render_png(
+        clip_geojson_for_render(args, geojson, transform),
+        Path(args.output),
+        transform=transform,
+        dpi=args.dpi,
+        include_layout=not args.no_layout,
+        north_line_spacing_m=args.north_line_spacing_m,
+    )
     return 0
 
 
 def command_render_pdf(args: argparse.Namespace) -> int:
     geojson = read_json(Path(args.input))
     transform = make_render_transform(args, geojson)
-    render_pdf(clip_geojson_for_render(args, geojson, transform), Path(args.output), transform=transform)
+    render_pdf(
+        clip_geojson_for_render(args, geojson, transform),
+        Path(args.output),
+        transform=transform,
+        include_layout=not args.no_layout,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        north_line_spacing_m=args.north_line_spacing_m,
+    )
     return 0
 
 
@@ -1643,6 +1836,10 @@ def build_parser() -> argparse.ArgumentParser:
     common_render.add_argument("--bbox", help="Optional render bounds as min_x,min_y,max_x,max_y")
     common_render.add_argument("--scale", type=int, default=10000)
     common_render.add_argument("--margin-mm", type=float, default=5.0)
+    common_render.add_argument("--map-title", help="Title text printed in SVG/PDF layout metadata.")
+    common_render.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG/PDF layout metadata.")
+    common_render.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
+    common_render.add_argument("--no-layout", action="store_true", help="Render only map geometry, without title, footer, frame, or north lines.")
     common_render.add_argument(
         "--magnetic-declination-deg",
         default="auto",

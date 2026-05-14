@@ -161,6 +161,25 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertLess(svg.index('fill="#f2c84b"'), svg.index('stroke="#9b5a28"'))
 
+    def test_svg_render_includes_layout_metadata_and_north_lines(self) -> None:
+        geojson = {"type": "FeatureCollection", "features": []}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "map.svg"
+            render_svg(
+                geojson,
+                output,
+                transform=RenderTransform([0, 0, 1000, 500], 5000, 5, magnetic_declination_deg=8.5),
+                map_title_text="Test map",
+                map_maker="Test maker",
+            )
+            svg = output.read_text(encoding="utf-8")
+
+        self.assertIn("Test map", svg)
+        self.assertIn("Scale 1:5000", svg)
+        self.assertIn("Test maker", svg)
+        self.assertIn("KOK 8.50 deg", svg)
+        self.assertIn('stroke="#6f2dbd"', svg)
+
 
 class EnvFileTest(unittest.TestCase):
     def test_read_env_file_value(self) -> None:

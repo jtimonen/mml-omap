@@ -297,22 +297,19 @@ is used. Render commands reuse that frame automatically, so the exact clipped
 paper rectangle and magnetic declination do not need to be retyped unless you
 want to override them.
 
-## Small Espoon Keskuspuisto Example
+## Espoon Keskuspuisto Example
 
-This example fetches a 100 m x 100 m rectangle around an approximate point in
-Espoon keskuspuisto. The bbox is in EPSG:3067 meters. A 100 m square is very
-small for an orienteering map, so this is mostly a fast smoke test for download,
-conversion, clipping, contours, and rendering; use a larger bbox for a useful
-map preview.
+This example fetches a 1 km x 500 m rectangle around an approximate point in
+Espoon keskuspuisto. The bbox is in EPSG:3067 meters.
 
 Generate the GeoJSON:
-`uv run mml-omap generate espoo-keskuspuisto-100m.geojson --bbox 373498,6674761,373598,6674861`
+`uv run mml-omap generate espoo-keskuspuisto-1km-500m.geojson --bbox 373048,6674561,374048,6675061`
 
 Render it to SVG:
-`uv run mml-omap render-svg espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.svg --scale 5000`
+`uv run mml-omap render-svg espoo-keskuspuisto-1km-500m.geojson espoo-keskuspuisto-1km-500m.svg --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"`
 
 Or render it to PDF at 1:5000:
-`uv run mml-omap render-pdf espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.pdf --scale 5000`
+`uv run mml-omap render-pdf espoo-keskuspuisto-1km-500m.geojson espoo-keskuspuisto-1km-500m.pdf --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"`
 
 ## Download Only
 
@@ -355,6 +352,12 @@ frame:
 ```
 uv run mml-omap render-pdf output.geojson map.pdf --bbox 385396,6672568,389620,6677160 --magnetic-declination-deg 10.5 --scale 10000 --margin-mm 5
 ```
+
+SVG and PDF renders include a simple map layout by default: map title, scale,
+map maker text, KOK correction, EPSG code, a paper-frame border, and
+magnetic-north alignment lines. Use `--map-title`, `--map-maker`, and
+`--north-line-spacing-m` to adjust those labels and north-line spacing. Use
+`--no-layout` for geometry-only output.
 
 ## Mapping
 

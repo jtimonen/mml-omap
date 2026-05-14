@@ -116,6 +116,30 @@ def write_json(path: Path, data: Any) -> None:
         file.write("\n")
 
 
+def read_env_file_value(name: str, path: Path = Path(".env")) -> str | None:
+    if not path.exists():
+        return None
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() != name:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        return value
+    return None
+
+
+def resolve_api_key(args: argparse.Namespace) -> str:
+    api_key = args.api_key or os.environ.get(args.api_key_env) or read_env_file_value(args.api_key_env)
+    if not api_key:
+        raise ValueError(f"Provide --api-key, set ${args.api_key_env}, or add {args.api_key_env}=... to .env")
+    return api_key
+
+
 def parse_bbox(raw: str) -> list[float]:
     parts = [float(part.strip()) for part in raw.split(",")]
     if len(parts) != 4:
@@ -1293,9 +1317,7 @@ def render_pdf(geojson: dict[str, Any], output_path: Path, *, transform: RenderT
 
 
 def command_download(args: argparse.Namespace) -> int:
-    api_key = args.api_key or os.environ.get(args.api_key_env)
-    if not api_key:
-        raise ValueError(f"Provide --api-key or set ${args.api_key_env}")
+    api_key = resolve_api_key(args)
     bbox = parse_orienteering_bbox(args.bbox)
     magnetic_declination_deg = resolve_magnetic_declination_deg(
         args.magnetic_declination_deg,
@@ -1358,9 +1380,7 @@ def command_convert_gpkg(args: argparse.Namespace) -> int:
 
 
 def command_generate(args: argparse.Namespace) -> int:
-    api_key = args.api_key or os.environ.get(args.api_key_env)
-    if not api_key:
-        raise ValueError(f"Provide --api-key or set ${args.api_key_env}")
+    api_key = resolve_api_key(args)
     output = Path(args.output)
     work_dir = Path(args.work_dir)
     archive_path = work_dir / (output.stem + ".zip")

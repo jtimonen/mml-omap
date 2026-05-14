@@ -96,11 +96,12 @@ contains that rotated paper frame, clips output geometry back to the rotated
 frame, then renders the paper frame with magnetic north pointing up.
 
 MML's Erantokartta separates this into `NEK` (magnetic declination, or eranto),
-`NAK` (grid/projection north correction, or napaluvun korjaus), and `KOK = NEK
-+ NAK` (total correction). Because this tool works in EPSG:3067 grid
-coordinates, automatic map rotation uses a lightweight Finland-only estimate of
-`KOK`, not just `NEK`. The authoritative MML service calculates values for 12 km
-x 12 km map-sheet centers from Finnish Meteorological Institute data:
+`NAK` (grid/projection north correction, or napaluvun korjaus), and `KOK`
+(total correction), where `KOK = NEK + NAK`. Because this tool works in
+EPSG:3067 grid coordinates, automatic map rotation uses a lightweight
+Finland-only estimate of `KOK`, not just `NEK`. The authoritative MML service
+calculates values for 12 km x 12 km map-sheet centers from Finnish
+Meteorological Institute data:
 https://www.maanmittauslaitos.fi/kartat-ja-paikkatieto/kartat/erantokartta
 
 Pass `--magnetic-declination-deg 10.5` when you want to use an authoritative
@@ -243,10 +244,20 @@ export MML_API_KEY="your-api-key"
 You can also pass `--api-key`, but the environment variable is better for shell
 history.
 
-If you prefer a local `.env` file for your own shell tooling, do not commit it:
+You can also put the key in a local `.env` file in the repository root. The CLI
+reads `.env` automatically when `MML_API_KEY` is not already set in the
+environment. Do not commit this file:
 
 ```sh
 MML_API_KEY=your-api-key
+```
+
+If you want to load it into your current shell manually, use `./.env`:
+
+```sh
+set -a
+. ./.env
+set +a
 ```
 
 ## Generate GeoJSON From A BBOX

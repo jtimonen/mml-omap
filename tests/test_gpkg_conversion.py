@@ -17,6 +17,7 @@ from mml_omap.cli import (
     meridian_convergence_deg,
     geojson_bbox,
     geojson_map_frame_declination,
+    read_env_file_value,
     validate_orienteering_bbox_size,
 )
 
@@ -125,6 +126,16 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertEqual(geojson_bbox(geojson), [0.0, 0.0, 1000.0, 2000.0])
         self.assertEqual(geojson_map_frame_declination(geojson), 10.0)
+
+
+class EnvFileTest(unittest.TestCase):
+    def test_read_env_file_value(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / ".env"
+            env_path.write_text("# comment\nMML_API_KEY='secret-value'\nOTHER=x\n", encoding="utf-8")
+
+            self.assertEqual(read_env_file_value("MML_API_KEY", env_path), "secret-value")
+            self.assertIsNone(read_env_file_value("MISSING", env_path))
 
 
 if __name__ == "__main__":

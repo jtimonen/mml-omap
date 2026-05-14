@@ -77,7 +77,7 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "niitty": {"object_type": "area", "symbol": "field"},
     "muuavoinalue": {"object_type": "area", "symbol": "field"},
     "puisto": {"object_type": "area", "symbol": "field"},
-    "urheilujavirkistysalue": {"object_type": "area", "symbol": "field"},
+    "urheilujavirkistysalue": {"object_type": "area", "symbol": "recreation_area"},
     "kallioalue": {"object_type": "area", "symbol": "open_rock"},
     "rakennus": {"object_type": "area", "symbol": "building"},
     "kivi": {"object_type": "point", "symbol": "mapped_rock"},
@@ -97,6 +97,7 @@ SYMBOL_STYLES = {
     "lake": {"stroke": "#008fd5", "stroke_width_mm": 0.10, "fill": "#b9e3f7"},
     "swamp": {"stroke": "#008fd5", "stroke_width_mm": 0.10, "fill": "#d8f0e8"},
     "field": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#f2c84b"},
+    "recreation_area": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "none"},
     "thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#49a64a"},
     "very_thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#16702f"},
     "open_rock": {"stroke": "#777777", "stroke_width_mm": 0.08, "fill": "#d9d9d9"},
@@ -105,6 +106,28 @@ SYMBOL_STYLES = {
 }
 
 DEFAULT_STYLE = {"stroke": "#444444", "stroke_width_mm": 0.18, "fill": "none"}
+
+SYMBOL_RENDER_ORDER = {
+    "field": 100,
+    "recreation_area": 105,
+    "thick_forest": 110,
+    "very_thick_forest": 120,
+    "open_rock": 130,
+    "lake": 140,
+    "swamp": 150,
+    "river": 160,
+    "contour": 300,
+    "index_contour": 310,
+    "form_line": 320,
+    "depression_contour": 330,
+    "stream": 360,
+    "road": 400,
+    "path": 410,
+    "fence": 420,
+    "cliff": 430,
+    "building": 500,
+    "mapped_rock": 600,
+}
 
 
 def read_json(path: Path) -> Any:
@@ -1020,11 +1043,39 @@ class RenderTransform:
 
 def feature_symbol(feature: dict[str, Any]) -> str:
     properties = feature.get("properties") or {}
-    return str(properties.get("symbol", properties.get("source_table", "unknown")))
+    symbol = str(properties.get("symbol", properties.get("source_table", "unknown")))
+    if properties.get("source_table") == "urheilujavirkistysalue" and symbol == "field":
+        return "recreation_area"
+    return symbol
 
 
 def feature_style(feature: dict[str, Any]) -> dict[str, Any]:
     return SYMBOL_STYLES.get(feature_symbol(feature), DEFAULT_STYLE)
+
+
+def feature_render_order(feature: dict[str, Any]) -> int:
+    symbol = feature_symbol(feature)
+    if symbol in SYMBOL_RENDER_ORDER:
+        return SYMBOL_RENDER_ORDER[symbol]
+    properties = feature.get("properties") or {}
+    object_type = properties.get("object_type")
+    if object_type == "area":
+        return 200
+    if object_type == "line":
+        return 450
+    if object_type == "point":
+        return 650
+    return 700
+
+
+def sorted_render_features(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        feature
+        for _, feature in sorted(
+            enumerate(features),
+            key=lambda item: (feature_render_order(item[1]), item[0]),
+        )
+    ]
 
 
 def iter_geometry_parts(geometry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1066,7 +1117,7 @@ def svg_path_for_line(line: list[Any], transform: RenderTransform) -> str:
 
 
 def render_svg(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform) -> None:
-    features = geojson_features(geojson)
+    features = sorted_render_features(geojson_features(geojson))
     progress(f"Rendering SVG with {len(features)} features...")
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -1239,7 +1290,7 @@ def write_png(path: Path, width: int, height: int, pixels: bytearray) -> None:
 
 
 def render_png(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform, dpi: int) -> None:
-    features = geojson_features(geojson)
+    features = sorted_render_features(geojson_features(geojson))
     progress(f"Rendering PNG with {len(features)} features at {dpi} dpi...")
     width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
     height = max(1, int(round(transform.page_height_mm / 25.4 * dpi)))
@@ -1289,7 +1340,7 @@ def pdf_point(transform: RenderTransform, coordinate: Any) -> tuple[float, float
 
 
 def render_pdf(geojson: dict[str, Any], output_path: Path, *, transform: RenderTransform) -> None:
-    features = geojson_features(geojson)
+    features = sorted_render_features(geojson_features(geojson))
     progress(f"Rendering PDF with {len(features)} features...")
     page_width = transform.page_width_mm * 72.0 / 25.4
     page_height = transform.page_height_mm * 72.0 / 25.4

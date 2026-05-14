@@ -60,10 +60,13 @@ Current source usage by feature type:
   `korkeuskayra` and rendered as `contour`. The tool does not currently derive
   contours directly from laser scanning data or an elevation model.
 - Vegetation: not meaningfully generated yet. Some open or semi-open land-cover
-  tables such as `maatalousmaa`, `niitty`, `muuavoinalue`, `puisto`, and
-  `urheilujavirkistysalue` are mapped as `field`, and `kallioalue` is mapped as
-  `open_rock`. Forest vegetation and runnability need future source mapping or
-  raster analysis.
+  tables such as `maatalousmaa`, `niitty`, `muuavoinalue`, and `puisto` are
+  mapped as `field`, and `kallioalue` is mapped as `open_rock`.
+  `urheilujavirkistysalue` is kept as `recreation_area` in the GeoJSON but is
+  not painted by the default renderer because it can describe a broad
+  sports/recreation land-use area rather than actual open runnable land.
+  Forest vegetation and runnability need future source mapping or raster
+  analysis.
 - Lakes and bodies of water: read from `jarvi` and `meri`, mapped as `lake`.
 - Streams and rivers: narrow streams are read from `virtavesikapea` and mapped
   as `stream`; wider water areas are read from `virtavesialue` and mapped as
@@ -223,6 +226,9 @@ For development with `uv`, sync the local environment and run tests:
 
 ```sh
 uv sync
+```
+
+```sh
 uv run python -m unittest discover -s tests
 ```
 
@@ -265,8 +271,7 @@ set +a
 Bounding boxes are `min_x,min_y,max_x,max_y` in EPSG:3067 meters:
 
 ```sh
-mml-omap generate output.geojson \
-  --bbox 385396,6672568,389620,6677160
+uv run mml-omap generate output.geojson --bbox 385396,6672568,389620,6677160
 ```
 
 Magnetic orientation is automatic by default. The generated GeoJSON is clipped
@@ -275,17 +280,13 @@ bbox. To override the estimate, pass the local total correction in degrees.
 Positive values mean magnetic north is east of EPSG:3067/grid north:
 
 ```sh
-mml-omap generate output.geojson \
-  --bbox 385396,6672568,389620,6677160 \
-  --magnetic-declination-deg 10.5
+uv run mml-omap generate output.geojson --bbox 385396,6672568,389620,6677160 --magnetic-declination-deg 10.5
 ```
 
 To use the automatic estimate for a specific date:
 
 ```sh
-mml-omap generate output.geojson \
-  --bbox 385396,6672568,389620,6677160 \
-  --magnetic-date 2026-05-13
+uv run mml-omap generate output.geojson --bbox 385396,6672568,389620,6677160 --magnetic-date 2026-05-13
 ```
 
 By default, temporary downloads are kept under `builds/mml_downloads`. Override
@@ -299,35 +300,31 @@ want to override them.
 ## Small Espoon Keskuspuisto Example
 
 This example fetches a 100 m x 100 m rectangle around an approximate point in
-Espoon keskuspuisto. The bbox is in EPSG:3067 meters:
+Espoon keskuspuisto. The bbox is in EPSG:3067 meters. A 100 m square is very
+small for an orienteering map, so this is mostly a fast smoke test for download,
+conversion, clipping, contours, and rendering; use a larger bbox for a useful
+map preview.
 
 ```sh
-uv run mml-omap generate espoo-keskuspuisto-100m.geojson \
-  --bbox 372622,6673688,372722,6673788
+uv run mml-omap generate espoo-keskuspuisto-100m.geojson --bbox 373498,6674761,373598,6674861
 ```
 
 Render it to SVG:
 
 ```sh
-uv run mml-omap render-svg \
-  espoo-keskuspuisto-100m.geojson \
-  espoo-keskuspuisto-100m.svg
+uv run mml-omap render-svg espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.svg --scale 5000
 ```
 
 Or render it to PDF at 1:5000:
 
 ```sh
-uv run mml-omap render-pdf \
-  espoo-keskuspuisto-100m.geojson \
-  espoo-keskuspuisto-100m.pdf \
-  --scale 5000
+uv run mml-omap render-pdf espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.pdf --scale 5000
 ```
 
 ## Download Only
 
 ```sh
-mml-omap download mml_area.zip \
-  --bbox 385396,6672568,389620,6677160
+uv run mml-omap download mml_area.zip --bbox 385396,6672568,389620,6677160
 ```
 
 This command downloads the enclosing MML bbox for the rotated paper frame. Use
@@ -336,8 +333,7 @@ This command downloads the enclosing MML bbox for the rotated paper frame. Use
 ## Convert An Existing GeoPackage
 
 ```sh
-mml-omap convert-gpkg maastotietokanta.gpkg output.geojson \
-  --bbox 385396,6672568,389620,6677160
+uv run mml-omap convert-gpkg maastotietokanta.gpkg output.geojson --bbox 385396,6672568,389620,6677160
 ```
 
 ## Render GeoJSON
@@ -345,30 +341,26 @@ mml-omap convert-gpkg maastotietokanta.gpkg output.geojson \
 Render SVG:
 
 ```sh
-mml-omap render-svg output.geojson map.svg
+uv run mml-omap render-svg output.geojson map.svg
 ```
 
 Render PNG:
 
 ```sh
-mml-omap render-png output.geojson map.png --dpi 300
+uv run mml-omap render-png output.geojson map.png --dpi 300
 ```
 
 Render PDF:
 
 ```sh
-mml-omap render-pdf output.geojson map.pdf
+uv run mml-omap render-pdf output.geojson map.pdf
 ```
 
 Rendering uses the GeoJSON extent by default. Pass `--bbox` to force the map
 frame:
 
 ```sh
-mml-omap render-pdf output.geojson map.pdf \
-  --bbox 385396,6672568,389620,6677160 \
-  --magnetic-declination-deg 10.5 \
-  --scale 10000 \
-  --margin-mm 5
+uv run mml-omap render-pdf output.geojson map.pdf --bbox 385396,6672568,389620,6677160 --magnetic-declination-deg 10.5 --scale 10000 --margin-mm 5
 ```
 
 ## Mapping
@@ -382,7 +374,8 @@ The default mapping is conservative:
 - `jarvi`, `meri` -> `lake`
 - `virtavesialue` -> `river`
 - `suo`, `soistuma` -> `swamp`
-- `maatalousmaa`, `niitty`, `muuavoinalue`, `puisto`, `urheilujavirkistysalue` -> `field`
+- `maatalousmaa`, `niitty`, `muuavoinalue`, `puisto` -> `field`
+- `urheilujavirkistysalue` -> `recreation_area` (kept in GeoJSON, not painted)
 - `kallioalue` -> `open_rock`
 - `rakennus` -> `building`
 - `kivi` -> `mapped_rock`
@@ -410,8 +403,7 @@ Override or extend mappings with JSON:
 Use it with:
 
 ```sh
-mml-omap convert-gpkg maastotietokanta.gpkg output.geojson \
-  --mapping mml_mapping.json
+uv run mml-omap convert-gpkg maastotietokanta.gpkg output.geojson --mapping mml_mapping.json
 ```
 
 ## Notes

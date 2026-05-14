@@ -21,6 +21,7 @@ from mml_omap.cli import (
     geojson_bbox,
     geojson_map_frame_declination,
     read_env_file_value,
+    render_svg,
     validate_orienteering_bbox_size,
 )
 
@@ -133,6 +134,32 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertEqual(geojson_bbox(geojson), [0.0, 0.0, 1000.0, 2000.0])
         self.assertEqual(geojson_map_frame_declination(geojson), 10.0)
+
+    def test_svg_render_draws_area_fills_below_contours(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"symbol": "contour", "object_type": "line"},
+                    "geometry": {"type": "LineString", "coordinates": [[0, 500], [1000, 500]]},
+                },
+                {
+                    "type": "Feature",
+                    "properties": {"symbol": "field", "object_type": "area"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[0, 0], [1000, 0], [1000, 1000], [0, 1000], [0, 0]]],
+                    },
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "map.svg"
+            render_svg(geojson, output, transform=RenderTransform([0, 0, 1000, 1000], 10000, 0))
+            svg = output.read_text(encoding="utf-8")
+
+        self.assertLess(svg.index('fill="#f2c84b"'), svg.index('stroke="#9b5a28"'))
 
 
 class EnvFileTest(unittest.TestCase):

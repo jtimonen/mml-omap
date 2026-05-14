@@ -25,6 +25,7 @@ from mml_omap.cli import (
     iof_symbol_metadata,
     merge_contour_features,
     read_env_file_value,
+    render_output_base,
     render_pdf,
     render_svg,
     validate_orienteering_bbox_size,
@@ -327,6 +328,37 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertIn(b"/Encoding /WinAnsiEncoding", pdf)
         self.assertIn("Mössenkärr".encode("latin-1"), pdf)
+
+    def test_pdf_render_can_print_symbol_numbers(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"symbol": "308", "iof_symbol_number": "308", "object_type": "area"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]]],
+                    },
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "map.pdf"
+            render_pdf(
+                geojson,
+                output,
+                transform=RenderTransform([0, 0, 100, 100], 5000, 5),
+                include_symbol_numbers=True,
+            )
+            pdf = output.read_bytes()
+
+        self.assertIn(b"(308) Tj", pdf)
+
+    def test_render_output_base_accepts_suffix_or_plain_base(self) -> None:
+        self.assertEqual(render_output_base("map"), Path("map"))
+        self.assertEqual(render_output_base("map.pdf"), Path("map"))
+        self.assertEqual(render_output_base("map.png"), Path("map"))
 
     def test_contour_fragments_with_same_height_are_merged_for_rendering(self) -> None:
         features = [

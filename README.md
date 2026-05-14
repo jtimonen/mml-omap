@@ -189,8 +189,10 @@ download job is submitted.
 
 There are generic tools that cover parts of this workflow:
 
-- Karttapullautin is the closest existing tool in spirit: it is built for
-  generating orienteering-map material from source geodata.
+- [Karttapullautin](https://github.com/rphlo/karttapullautin) is the closest
+  existing tool in spirit. It is built specifically for generating
+  orienteering-map material from classified LiDAR and vector geodata, and it is
+  the main prior-art reference for this project.
 - `ogc-api-processes-client` is a generic OGC API Processes Python client.
 - GDAL/OGR can convert GeoPackage to GeoJSON once you already have the data.
 - Other GeoPackage/GeoJSON utilities can inspect or convert local files.
@@ -200,6 +202,17 @@ magnetic-north paper frames, or sport-specific map conventions. This project
 exists to combine the MML-specific job request, API-key auth, download handling,
 GeoPackage geometry decoding, and practical table-to-symbol mapping into one
 CLI.
+
+Several design choices here are intentionally credited to Karttapullautin:
+
+- Treating the output as a practical auto-generated orienteering basemap rather
+  than as a generic topographic render.
+- Keeping a source-attribute-to-ISOM-symbol mapping layer, similar in spirit to
+  Karttapullautin `vectorconf` files.
+- Treating vector data as only one part of the final map: Karttapullautin also
+  derives contours, cliffs, vegetation, yellow/open land, knolls, and
+  depressions from LiDAR. This project does not yet do that, and MML
+  GeoPackage-only output should be understood as a more limited vector basemap.
 
 ## Install And Run With uv
 
@@ -314,13 +327,22 @@ This example fetches an approximately 2.05 km x 1.43 km rectangle around
 Mössenkärr in Espoon keskuspuisto. The bbox is in EPSG:3067 meters.
 
 Generate the GeoJSON:
-`uv run mml-omap generate espoo-keskuspuisto-mossenkarr.geojson --bbox 370867,6674147,372917,6675581`
 
-Render it to SVG:
-`uv run mml-omap render-svg espoo-keskuspuisto-mossenkarr.geojson espoo-keskuspuisto-mossenkarr.svg --scale 5000 --map-title "Espoon keskuspuisto - Mössenkärr" --map-maker "Your name"`
+```sh
+uv run mml-omap generate espoo-keskuspuisto-mossenkarr.geojson --bbox 370867,6674147,372917,6675581
+```
 
-Or render it to PDF at 1:5000:
-`uv run mml-omap render-pdf espoo-keskuspuisto-mossenkarr.geojson espoo-keskuspuisto-mossenkarr.pdf --scale 5000 --map-title "Espoon keskuspuisto - Mössenkärr" --map-maker "Your name"`
+Render PNG, PDF, and a PDF with symbol numbers printed over the features:
+
+```sh
+uv run mml-omap render espoo-keskuspuisto-mossenkarr.geojson espoo-keskuspuisto-mossenkarr --scale 5000 --map-title "Espoon keskuspuisto - Mössenkärr" --map-maker "Your name"
+```
+
+This writes:
+
+- `espoo-keskuspuisto-mossenkarr.png`
+- `espoo-keskuspuisto-mossenkarr.pdf`
+- `espoo-keskuspuisto-mossenkarr-symbols.pdf`
 
 ## Download Only
 
@@ -339,7 +361,15 @@ uv run mml-omap convert-gpkg maastotietokanta.gpkg output.geojson --bbox 385396,
 
 ## Render GeoJSON
 
-Render SVG:
+Render PNG, PDF, and a symbol-number PDF:
+
+```sh
+uv run mml-omap render output.geojson map --dpi 300
+```
+
+This writes `map.png`, `map.pdf`, and `map-symbols.pdf`.
+
+Render SVG only:
 
 ```
 uv run mml-omap render-svg output.geojson map.svg
@@ -355,6 +385,12 @@ Render PDF:
 
 ```
 uv run mml-omap render-pdf output.geojson map.pdf
+```
+
+Render PDF with IOF/ISOM symbol numbers printed over features:
+
+```
+uv run mml-omap render-pdf output.geojson map-symbols.pdf --symbol-numbers
 ```
 
 Rendering uses the GeoJSON extent by default. Pass `--bbox` to force the map
@@ -381,8 +417,9 @@ too aggressively in a dense area, lower it, for example
 
 The authoritative project mapping table is documented in
 [docs/mml-to-isom-mapping.md](docs/mml-to-isom-mapping.md). It follows the same
-attribute-to-ISOM-code idea as Karttapullautin `vectorconf` files, but with
-MML-specific tables and `kohdeluokka` values.
+attribute-to-ISOM-code idea as Karttapullautin `vectorconf` files. Credit for
+that mapping-table pattern belongs to Karttapullautin; this project adapts the
+idea to MML GeoPackage tables and `kohdeluokka` values.
 
 The default mapping is conservative. The names below describe the internal
 classification used to choose an ISOM symbol, but generated GeoJSON does not

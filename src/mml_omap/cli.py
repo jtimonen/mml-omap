@@ -1707,6 +1707,42 @@ def fill_polygon(
                 set_pixel(canvas, width, height, x, y, color)
 
 
+def draw_polygon_marsh_lines(
+    canvas: bytearray,
+    width: int,
+    height: int,
+    rings: list[list[tuple[int, int]]],
+    color: tuple[int, int, int],
+    stroke_px: int,
+    spacing_px: int,
+    dash_px: int,
+    gap_px: int,
+) -> None:
+    if not rings or not rings[0]:
+        return
+    xs = [point[0] for ring in rings for point in ring]
+    ys = [point[1] for ring in rings for point in ring]
+    min_x = max(min(xs), 0)
+    max_x = min(max(xs), width - 1)
+    min_y = max(min(ys), 0)
+    max_y = min(max(ys), height - 1)
+    spacing_px = max(spacing_px, 1)
+    period = max(dash_px + gap_px, 1)
+    radius = max(stroke_px // 2, 0)
+    for y in range(min_y - (min_y % spacing_px), max_y + spacing_px + 1, spacing_px):
+        for x in range(min_x, max_x + 1):
+            if x % period >= dash_px:
+                continue
+            for oy in range(-radius, radius + 1):
+                yy = y + oy
+                if yy < min_y or yy > max_y:
+                    continue
+                if point_in_polygon(x + 0.5, yy + 0.5, rings[0]) and not any(
+                    point_in_polygon(x + 0.5, yy + 0.5, hole) for hole in rings[1:]
+                ):
+                    set_pixel(canvas, width, height, x, yy, color)
+
+
 def draw_circle(
     canvas: bytearray,
     width: int,
@@ -1747,6 +1783,110 @@ def write_png(path: Path, width: int, height: int, pixels: bytearray) -> None:
     path.write_bytes(bytes(png))
 
 
+def render_png_with_pillow(
+    geojson: dict[str, Any],
+    output_path: Path,
+    *,
+    transform: RenderTransform,
+    dpi: int,
+    include_layout: bool,
+    north_line_spacing_m: float,
+    contour_merge_tolerance_m: float,
+) -> bool:
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return False
+
+    features = prepare_render_features(geojson, contour_merge_tolerance_m)
+    progress(f"Rendering PNG with Pillow: {len(features)} features at {dpi} dpi...")
+    width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
+    height = max(1, int(round(transform.page_height_mm / 25.4 * dpi)))
+    px_per_mm = dpi / 25.4
+    image = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(image)
+
+    def to_px(coordinate: Any) -> tuple[float, float]:
+        x, y = transform.to_mm(coordinate)
+        return x * px_per_mm, y * px_per_mm
+
+    for index, feature in enumerate(features, start=1):
+        if index % 10000 == 0:
+            progress(f"  rendered {index}/{len(features)} features...")
+        style = feature_style(feature)
+        stroke = color_to_rgb(str(style.get("stroke", "none")))
+        fill = color_to_rgb(str(style.get("fill", "none")))
+        stroke_px = max(1, int(round(float(style.get("stroke_width_mm", 0.18)) * px_per_mm)))
+        fill_pattern = style.get("svg_fill_pattern")
+        for part in iter_geometry_parts(feature.get("geometry") or {}):
+            if part["type"] == "Polygon":
+                rings = [[to_px(point) for point in ring] for ring in part.get("coordinates") or []]
+                if not rings:
+                    continue
+                if fill_pattern == "marsh":
+                    xs = [point[0] for ring in rings for point in ring]
+                    ys = [point[1] for ring in rings for point in ring]
+                    min_x = max(int(math.floor(min(xs))), 0)
+                    min_y = max(int(math.floor(min(ys))), 0)
+                    max_x = min(int(math.ceil(max(xs))), width - 1)
+                    max_y = min(int(math.ceil(max(ys))), height - 1)
+                    if max_x < min_x or max_y < min_y:
+                        continue
+                    local_size = (max_x - min_x + 1, max_y - min_y + 1)
+                    local_rings = [[(x - min_x, y - min_y) for x, y in ring] for ring in rings]
+                    mask = Image.new("L", local_size, 0)
+                    mask_draw = ImageDraw.Draw(mask)
+                    mask_draw.polygon(local_rings[0], fill=255)
+                    for hole in local_rings[1:]:
+                        mask_draw.polygon(hole, fill=0)
+                    overlay = Image.new("RGB", local_size, (255, 255, 255))
+                    overlay_draw = ImageDraw.Draw(overlay)
+                    marsh_color = color_to_rgb(str(style.get("pattern_stroke", "#008fd5"))) or (0, 143, 213)
+                    marsh_width = max(1, int(round(float(style.get("pattern_stroke_width_mm", 0.12)) * px_per_mm)))
+                    spacing = max(1, int(round(float(style.get("pattern_spacing_mm", 1.0)) * px_per_mm)))
+                    dash = max(1, int(round(1.4 * px_per_mm)))
+                    gap = max(1, int(round(0.55 * px_per_mm)))
+                    for y in range(-(min_y % spacing), local_size[1] + spacing, spacing):
+                        for x in range(0, local_size[0], dash + gap):
+                            overlay_draw.line([(x, y), (min(x + dash, local_size[0]), y)], fill=marsh_color, width=marsh_width)
+                    image.paste(overlay, (min_x, min_y), mask)
+                elif fill:
+                    draw.polygon(rings[0], fill=fill)
+                if stroke:
+                    for ring in rings:
+                        if len(ring) > 1:
+                            draw.line(ring + [ring[0]], fill=stroke, width=stroke_px, joint="curve")
+            elif part["type"] == "LineString":
+                points = [to_px(point) for point in part.get("coordinates") or []]
+                if len(points) < 2:
+                    continue
+                for layer in line_style_layers(style):
+                    layer_stroke = color_to_rgb(str(layer.get("stroke", "none")))
+                    if not layer_stroke:
+                        continue
+                    layer_px = max(1, int(round(float(layer.get("stroke_width_mm", 0.18)) * px_per_mm)))
+                    draw.line(points, fill=layer_stroke, width=layer_px, joint="curve")
+            elif part["type"] == "Point":
+                if feature_label_text(feature):
+                    continue
+                color = fill or stroke or (0, 0, 0)
+                radius = max(2, int(round(point_radius_mm(style) * px_per_mm)))
+                x, y = to_px(part.get("coordinates"))
+                draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+    if include_layout:
+        purple = (111, 45, 189)
+        line_width = max(1, int(round(0.18 * px_per_mm)))
+        for x_mm in north_line_x_positions(transform, north_line_spacing_m):
+            x = x_mm * px_per_mm
+            y0 = transform.margin_mm * px_per_mm
+            y1 = (transform.margin_mm + transform.map_height_mm) * px_per_mm
+            draw.line([(x, y0), (x, y1)], fill=purple, width=line_width)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output_path)
+    progress(f"Wrote PNG to {output_path}.")
+    return True
+
+
 def render_png(
     geojson: dict[str, Any],
     output_path: Path,
@@ -1757,6 +1897,16 @@ def render_png(
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
     contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
+    if render_png_with_pillow(
+        geojson,
+        output_path,
+        transform=transform,
+        dpi=dpi,
+        include_layout=include_layout,
+        north_line_spacing_m=north_line_spacing_m,
+        contour_merge_tolerance_m=contour_merge_tolerance_m,
+    ):
+        return
     features = prepare_render_features(geojson, contour_merge_tolerance_m)
     progress(f"Rendering PNG with {len(features)} features at {dpi} dpi...")
     width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
@@ -1775,10 +1925,26 @@ def render_png(
         stroke = color_to_rgb(str(style.get("stroke", "none")))
         fill = color_to_rgb(str(style.get("fill", "none")))
         stroke_px = max(1, int(round(float(style.get("stroke_width_mm", 0.18)) * px_per_mm)))
+        fill_pattern = style.get("svg_fill_pattern")
         for part in iter_geometry_parts(feature.get("geometry") or {}):
             if part["type"] == "Polygon":
                 rings = [[to_px(point) for point in ring] for ring in part.get("coordinates") or []]
-                if fill:
+                if fill_pattern == "marsh":
+                    marsh_color = color_to_rgb(str(style.get("pattern_stroke", "#008fd5"))) or (0, 143, 213)
+                    marsh_width = max(1, int(round(float(style.get("pattern_stroke_width_mm", 0.12)) * px_per_mm)))
+                    marsh_spacing = max(1, int(round(float(style.get("pattern_spacing_mm", 1.0)) * px_per_mm)))
+                    draw_polygon_marsh_lines(
+                        canvas,
+                        width,
+                        height,
+                        rings,
+                        marsh_color,
+                        marsh_width,
+                        marsh_spacing,
+                        max(1, int(round(1.4 * px_per_mm))),
+                        max(1, int(round(0.55 * px_per_mm))),
+                    )
+                elif fill:
                     fill_polygon(canvas, width, height, rings, fill)
                 if stroke:
                     for ring in rings:
@@ -1893,6 +2059,107 @@ def append_pdf_circle(commands: list[str], center_x: float, center_y: float, rad
     commands.append("h")
 
 
+def append_pdf_polygon_path(commands: list[str], part: dict[str, Any], transform: RenderTransform) -> None:
+    for ring in part.get("coordinates") or []:
+        if not ring:
+            continue
+        x, y = pdf_point(transform, ring[0])
+        commands.append(f"{x:.3f} {y:.3f} m")
+        for coordinate in ring[1:]:
+            x, y = pdf_point(transform, coordinate)
+            commands.append(f"{x:.3f} {y:.3f} l")
+        commands.append("h")
+
+
+def append_pdf_marsh_lines(commands: list[str], part: dict[str, Any], style: dict[str, Any], transform: RenderTransform) -> None:
+    bbox = polygon_part_mm_bbox(part, transform)
+    if bbox is None:
+        return
+    min_x, min_y, max_x, max_y = bbox
+    pattern_stroke = color_to_rgb(str(style.get("pattern_stroke", "#008fd5"))) or (0, 143, 213)
+    pattern_width = float(style.get("pattern_stroke_width_mm", 0.12)) * 72.0 / 25.4
+    pattern_spacing = max(float(style.get("pattern_spacing_mm", 1.0)), 0.1)
+    pattern_dasharray = style.get("pattern_dasharray")
+    commands.append("q")
+    append_pdf_polygon_path(commands, part, transform)
+    commands.append("W n")
+    commands.append(pdf_color_operator(pattern_stroke, stroke=True))
+    commands.append(f"{pattern_width:.3f} w")
+    append_pdf_dash(commands, pattern_dasharray)
+    y_mm = math.floor(min_y / pattern_spacing) * pattern_spacing
+    while y_mm <= max_y + pattern_spacing:
+        x0, y0 = pdf_mm(min_x, y_mm, transform)
+        x1, y1 = pdf_mm(max_x, y_mm, transform)
+        commands.append(f"{x0:.3f} {y0:.3f} m")
+        commands.append(f"{x1:.3f} {y1:.3f} l")
+        commands.append("S")
+        y_mm += pattern_spacing
+    commands.append("Q")
+
+
+def first_coordinate(coordinates: Any) -> Any | None:
+    while isinstance(coordinates, list) and coordinates:
+        candidate = coordinates[0]
+        if isinstance(candidate, list) and len(candidate) >= 2 and all(isinstance(value, (int, float)) for value in candidate[:2]):
+            return candidate
+        coordinates = candidate
+    return None
+
+
+def feature_label_position_mm(feature: dict[str, Any], transform: RenderTransform) -> tuple[float, float] | None:
+    geometry = feature.get("geometry") or {}
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    if geometry_type == "Point":
+        return transform.to_mm(coordinates)
+    part = next(iter(iter_geometry_parts(geometry)), None)
+    if part is None:
+        coordinate = first_coordinate(coordinates)
+        return transform.to_mm(coordinate) if coordinate is not None else None
+    if part["type"] == "Polygon":
+        bbox = polygon_part_mm_bbox(part, transform)
+        if bbox is None:
+            return None
+        min_x, min_y, max_x, max_y = bbox
+        return (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+    if part["type"] == "LineString":
+        line = part.get("coordinates") or []
+        if not line:
+            return None
+        return transform.to_mm(line[len(line) // 2])
+    if part["type"] == "Point":
+        return transform.to_mm(part.get("coordinates"))
+    return None
+
+
+def feature_iof_symbol_number(feature: dict[str, Any]) -> str | None:
+    properties = feature.get("properties") or {}
+    number = properties.get("iof_symbol_number")
+    if number:
+        return str(number)
+    symbol = properties.get("symbol")
+    if isinstance(symbol, (str, int)) and str(symbol).isdigit():
+        return str(symbol)
+    metadata = iof_symbol_metadata(feature_symbol(feature))
+    return metadata["iof_symbol_number"] if metadata else None
+
+
+def append_pdf_symbol_number_labels(commands: list[str], features: list[dict[str, Any]], transform: RenderTransform) -> None:
+    commands.append("0 0 0 rg")
+    for feature in features:
+        number = feature_iof_symbol_number(feature)
+        position = feature_label_position_mm(feature, transform)
+        if not number or position is None:
+            continue
+        x_mm, y_mm = position
+        x, y = pdf_mm(x_mm, y_mm, transform)
+        commands.append("BT")
+        commands.append("/F1 5.00 Tf")
+        commands.append(f"{x:.3f} {y:.3f} Td")
+        commands.append(f"({pdf_escape_text(number)}) Tj")
+        commands.append("ET")
+
+
 def append_pdf_layout(
     commands: list[str],
     output_path: Path,
@@ -1943,6 +2210,7 @@ def render_pdf(
     contour_interval_m: float = 5.0,
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
     contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
+    include_symbol_numbers: bool = False,
 ) -> None:
     features = prepare_render_features(geojson, contour_merge_tolerance_m)
     progress(f"Rendering PDF with {len(features)} features...")
@@ -1956,22 +2224,20 @@ def render_pdf(
         stroke = color_to_rgb(str(style.get("stroke", "none")))
         fill = color_to_rgb(str(style.get("fill", "none")))
         stroke_width = float(style.get("stroke_width_mm", 0.18)) * 72.0 / 25.4
+        fill_pattern = style.get("svg_fill_pattern")
         for part in iter_geometry_parts(feature.get("geometry") or {}):
             if part["type"] == "Polygon":
+                if fill_pattern == "marsh":
+                    append_pdf_marsh_lines(commands, part, style, transform)
+                    continue
+                if not fill and not stroke:
+                    continue
                 if fill:
                     commands.append(pdf_color_operator(fill, stroke=False))
                 if stroke:
                     commands.append(pdf_color_operator(stroke, stroke=True))
                     commands.append(f"{stroke_width:.3f} w")
-                for ring in part.get("coordinates") or []:
-                    if not ring:
-                        continue
-                    x, y = pdf_point(transform, ring[0])
-                    commands.append(f"{x:.3f} {y:.3f} m")
-                    for coordinate in ring[1:]:
-                        x, y = pdf_point(transform, coordinate)
-                        commands.append(f"{x:.3f} {y:.3f} l")
-                    commands.append("h")
+                append_pdf_polygon_path(commands, part, transform)
                 commands.append("B" if fill and stroke else ("f" if fill else "S"))
             elif part["type"] == "LineString":
                 line = part.get("coordinates") or []
@@ -2010,6 +2276,8 @@ def render_pdf(
             contour_interval_m=contour_interval_m,
             north_line_spacing_m=north_line_spacing_m,
         )
+    if include_symbol_numbers:
+        append_pdf_symbol_number_labels(commands, features, transform)
     content = ("\n".join(commands) + "\n").encode("latin-1", "replace")
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -2232,6 +2500,53 @@ def command_render_pdf(args: argparse.Namespace) -> int:
         contour_interval_m=resolve_contour_interval_m(args.contour_interval_m, clipped_geojson),
         north_line_spacing_m=args.north_line_spacing_m,
         contour_merge_tolerance_m=args.contour_merge_tolerance_m,
+        include_symbol_numbers=getattr(args, "symbol_numbers", False),
+    )
+    return 0
+
+
+def render_output_base(output: str) -> Path:
+    path = Path(output)
+    return path.with_suffix("") if path.suffix.lower() in {".png", ".pdf", ".svg"} else path
+
+
+def command_render(args: argparse.Namespace) -> int:
+    geojson = read_json(Path(args.input))
+    transform = make_render_transform(args, geojson)
+    clipped_geojson = clip_geojson_for_render(args, geojson, transform)
+    base = render_output_base(args.output)
+    contour_interval_m = resolve_contour_interval_m(args.contour_interval_m, clipped_geojson)
+    render_png(
+        clipped_geojson,
+        base.with_suffix(".png"),
+        transform=transform,
+        dpi=args.dpi,
+        include_layout=not args.no_layout,
+        north_line_spacing_m=args.north_line_spacing_m,
+        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
+    )
+    render_pdf(
+        clipped_geojson,
+        base.with_suffix(".pdf"),
+        transform=transform,
+        include_layout=not args.no_layout,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        contour_interval_m=contour_interval_m,
+        north_line_spacing_m=args.north_line_spacing_m,
+        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
+    )
+    render_pdf(
+        clipped_geojson,
+        base.with_name(base.name + "-symbols").with_suffix(".pdf"),
+        transform=transform,
+        include_layout=not args.no_layout,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        contour_interval_m=contour_interval_m,
+        north_line_spacing_m=args.north_line_spacing_m,
+        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
+        include_symbol_numbers=True,
     )
     return 0
 
@@ -2316,6 +2631,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common_render.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
 
+    render_parser = subparsers.add_parser(
+        "render",
+        parents=[common_render],
+        help="Render GeoJSON to PNG, PDF, and a symbol-number PDF.",
+    )
+    render_parser.add_argument("--dpi", type=int, default=300)
+    render_parser.set_defaults(func=command_render)
+
     render_svg_parser = subparsers.add_parser("render-svg", parents=[common_render], help="Render GeoJSON to SVG.")
     render_svg_parser.set_defaults(func=command_render_svg)
 
@@ -2324,6 +2647,7 @@ def build_parser() -> argparse.ArgumentParser:
     render_png_parser.set_defaults(func=command_render_png)
 
     render_pdf_parser = subparsers.add_parser("render-pdf", parents=[common_render], help="Render GeoJSON to PDF.")
+    render_pdf_parser.add_argument("--symbol-numbers", action="store_true", help="Print IOF/ISOM symbol numbers over rendered features.")
     render_pdf_parser.set_defaults(func=command_render_pdf)
 
     return parser

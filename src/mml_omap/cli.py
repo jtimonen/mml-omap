@@ -51,8 +51,8 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
             "12112": "major_road",
             "12121": "major_road",
             "12122": "major_road",
-            "12131": "road",
-            "12132": "road",
+            "12131": "major_road",
+            "12132": "major_road",
             "12141": "small_road",
             "12142": "small_road",
             "12151": "small_road",
@@ -60,8 +60,8 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
             # Tracks, paths, footways.
             "12311": "path",
             "12312": "path",
-            "12313": "path",
-            "12314": "small_path",
+            "12313": "small_road",
+            "12314": "small_road",
             "12315": "small_path",
             "12316": "small_path",
             "12317": "small_path",
@@ -70,7 +70,13 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "rautatie": {"object_type": "line", "symbol": "railway"},
     "aita": {"object_type": "line", "symbol": "fence"},
     "jyrkanne": {"object_type": "line", "symbol": "cliff"},
-    "virtavesikapea": {"object_type": "line", "symbol": "stream"},
+    "virtavesikapea": {
+        "object_type": "line",
+        "symbol": "stream",
+        "kohdeluokka": {
+            "36312": "wide_stream",
+        },
+    },
     "korkeuskayra": {"object_type": "line", "symbol": "contour"},
     "rakennusreunaviiva": {"object_type": "line", "symbol": "building"},
     "jarvi": {"object_type": "area", "symbol": "lake"},
@@ -114,8 +120,9 @@ SYMBOL_STYLES = {
         "fill": "none",
     },
     "railway": {"stroke": "#000000", "stroke_width_mm": 0.28, "fill": "none", "dasharray": "2.0 1.0"},
-    "stream": {"stroke": "#008fd5", "stroke_width_mm": 0.18, "fill": "none"},
-    "river": {"stroke": "#008fd5", "stroke_width_mm": 0.35, "fill": "none"},
+    "stream": {"stroke": "#008fd5", "stroke_width_mm": 0.28, "fill": "none"},
+    "wide_stream": {"stroke": "#008fd5", "stroke_width_mm": 0.45, "fill": "none"},
+    "river": {"stroke": "#008fd5", "stroke_width_mm": 0.50, "fill": "none"},
     "cliff": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
     "fence": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none"},
     "lake": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#b9e3f7"},
@@ -153,6 +160,7 @@ SYMBOL_RENDER_ORDER = {
     "form_line": 320,
     "depression_contour": 330,
     "stream": 360,
+    "wide_stream": 365,
     "major_road": 400,
     "road": 405,
     "small_road": 410,
@@ -1084,16 +1092,16 @@ def feature_symbol(feature: dict[str, Any]) -> str:
     symbol = str(properties.get("symbol", properties.get("source_table", "unknown")))
     if properties.get("source_table") == "tieviiva":
         kohdeluokka = str(properties.get("kohdeluokka", ""))
-        if kohdeluokka in {"12111", "12112", "12121", "12122"}:
+        if kohdeluokka in {"12111", "12112", "12121", "12122", "12131", "12132"}:
             return "major_road"
-        if kohdeluokka in {"12131", "12132"}:
-            return "road"
-        if kohdeluokka in {"12141", "12142", "12151", "12152"}:
+        if kohdeluokka in {"12141", "12142", "12151", "12152", "12313", "12314"}:
             return "small_road"
-        if kohdeluokka in {"12311", "12312", "12313"}:
+        if kohdeluokka in {"12311", "12312"}:
             return "path"
         if kohdeluokka in {"12314", "12315", "12316", "12317"}:
             return "small_path"
+    if properties.get("source_table") == "virtavesikapea" and str(properties.get("kohdeluokka", "")) == "36312":
+        return "wide_stream"
     if properties.get("source_table") == "maatalousmaa" and symbol == "field":
         return "cultivated_land"
     if properties.get("source_table") == "urheilujavirkistysalue" and symbol == "field":
@@ -1424,9 +1432,8 @@ def render_svg(
         ),
         (
             '<defs>'
-            '<pattern id="marsh" patternUnits="userSpaceOnUse" width="2.4" height="1.2">'
-            '<rect width="2.4" height="1.2" fill="#ffffff"/>'
-            '<path d="M0 0.6 H2.4" stroke="#008fd5" stroke-width="0.18" stroke-dasharray="1.0 0.55"/>'
+            '<pattern id="marsh" patternUnits="userSpaceOnUse" width="3.2" height="1.8">'
+            '<path d="M0 0.9 H3.2" stroke="#008fd5" stroke-width="0.25" stroke-dasharray="1.4 0.55"/>'
             '</pattern>'
             '<pattern id="cultivated-land" patternUnits="userSpaceOnUse" width="2.0" height="2.0">'
             '<rect width="2.0" height="2.0" fill="#f2c84b"/>'

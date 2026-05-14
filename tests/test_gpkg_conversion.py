@@ -172,7 +172,11 @@ class OrienteeringBoundsTest(unittest.TestCase):
         )
         self.assertEqual(
             feature_symbol({"properties": {"source_table": "tieviiva", "symbol": "path", "kohdeluokka": 12314}}),
-            "small_path",
+            "small_road",
+        )
+        self.assertEqual(
+            feature_symbol({"properties": {"source_table": "virtavesikapea", "symbol": "stream", "kohdeluokka": 36312}}),
+            "wide_stream",
         )
 
     def test_svg_render_uses_iof_like_water_marsh_field_and_road_symbols(self) -> None:

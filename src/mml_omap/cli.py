@@ -46,24 +46,28 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
         "object_type": "line",
         "symbol": "path",
         "kohdeluokka": {
-            # Roads and streets.
-            "12111": "road",
-            "12112": "road",
-            "12121": "road",
-            "12122": "road",
+            # Roads and streets, grouped by render symbol.
+            "12111": "major_road",
+            "12112": "major_road",
+            "12121": "major_road",
+            "12122": "major_road",
             "12131": "road",
             "12132": "road",
-            "12141": "road",
-            "12151": "road",
-            "12152": "road",
+            "12141": "small_road",
+            "12142": "small_road",
+            "12151": "small_road",
+            "12152": "small_road",
             # Tracks, paths, footways.
+            "12311": "path",
             "12312": "path",
             "12313": "path",
-            "12314": "path",
-            "12316": "path",
+            "12314": "small_path",
+            "12315": "small_path",
+            "12316": "small_path",
+            "12317": "small_path",
         },
     },
-    "rautatie": {"object_type": "line", "symbol": "road"},
+    "rautatie": {"object_type": "line", "symbol": "railway"},
     "aita": {"object_type": "line", "symbol": "fence"},
     "jyrkanne": {"object_type": "line", "symbol": "cliff"},
     "virtavesikapea": {"object_type": "line", "symbol": "stream"},
@@ -74,7 +78,7 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "virtavesialue": {"object_type": "area", "symbol": "river"},
     "suo": {"object_type": "area", "symbol": "swamp"},
     "soistuma": {"object_type": "area", "symbol": "swamp"},
-    "maatalousmaa": {"object_type": "area", "symbol": "field"},
+    "maatalousmaa": {"object_type": "area", "symbol": "cultivated_land"},
     "niitty": {"object_type": "area", "symbol": "field"},
     "muuavoinalue": {"object_type": "area", "symbol": "field"},
     "puisto": {"object_type": "area", "symbol": "field"},
@@ -99,21 +103,32 @@ SYMBOL_STYLES = {
     "form_line": {"stroke": "#9b5a28", "stroke_width_mm": 0.10, "fill": "none", "dasharray": "1.0 0.5"},
     "depression_contour": {"stroke": "#9b5a28", "stroke_width_mm": 0.14, "fill": "none"},
     "path": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none", "dasharray": "1.0 0.7"},
-    "road": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
+    "small_path": {"stroke": "#000000", "stroke_width_mm": 0.12, "fill": "none", "dasharray": "0.7 0.7"},
+    "small_road": {"stroke": "#000000", "stroke_width_mm": 0.28, "fill": "none"},
+    "road": {"stroke": "#000000", "stroke_width_mm": 0.42, "fill": "none"},
+    "major_road": {
+        "stroke": "#000000",
+        "stroke_width_mm": 0.62,
+        "inner_stroke": "#8b5a2b",
+        "inner_stroke_width_mm": 0.38,
+        "fill": "none",
+    },
+    "railway": {"stroke": "#000000", "stroke_width_mm": 0.28, "fill": "none", "dasharray": "2.0 1.0"},
     "stream": {"stroke": "#008fd5", "stroke_width_mm": 0.18, "fill": "none"},
     "river": {"stroke": "#008fd5", "stroke_width_mm": 0.35, "fill": "none"},
     "cliff": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
     "fence": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none"},
-    "lake": {"stroke": "#008fd5", "stroke_width_mm": 0.10, "fill": "#b9e3f7"},
-    "swamp": {"stroke": "#008fd5", "stroke_width_mm": 0.10, "fill": "#d8f0e8"},
+    "lake": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#b9e3f7"},
+    "swamp": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#ffffff", "svg_fill_pattern": "marsh"},
     "field": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#f2c84b"},
+    "cultivated_land": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#f2c84b", "svg_fill_pattern": "cultivated_land"},
     "recreation_area": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "none"},
     "private_yard": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#b7bf63"},
     "thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#49a64a"},
     "very_thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#16702f"},
     "open_rock": {"stroke": "#777777", "stroke_width_mm": 0.08, "fill": "#d9d9d9"},
     "building": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#222222"},
-    "mapped_rock": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#000000"},
+    "mapped_rock": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#000000", "point_radius_mm": 0.42},
     "place_label": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#000000", "font_size_mm": 3.0},
     "water_label": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#008fd5", "font_size_mm": 3.0, "font_style": "italic"},
 }
@@ -124,6 +139,7 @@ DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 20.0
 
 SYMBOL_RENDER_ORDER = {
     "field": 100,
+    "cultivated_land": 102,
     "recreation_area": 105,
     "private_yard": 108,
     "thick_forest": 110,
@@ -137,10 +153,14 @@ SYMBOL_RENDER_ORDER = {
     "form_line": 320,
     "depression_contour": 330,
     "stream": 360,
-    "road": 400,
-    "path": 410,
-    "fence": 420,
-    "cliff": 430,
+    "major_road": 400,
+    "road": 405,
+    "small_road": 410,
+    "railway": 415,
+    "path": 420,
+    "small_path": 425,
+    "fence": 430,
+    "cliff": 440,
     "building": 500,
     "mapped_rock": 600,
     "place_label": 700,
@@ -1062,6 +1082,20 @@ class RenderTransform:
 def feature_symbol(feature: dict[str, Any]) -> str:
     properties = feature.get("properties") or {}
     symbol = str(properties.get("symbol", properties.get("source_table", "unknown")))
+    if properties.get("source_table") == "tieviiva":
+        kohdeluokka = str(properties.get("kohdeluokka", ""))
+        if kohdeluokka in {"12111", "12112", "12121", "12122"}:
+            return "major_road"
+        if kohdeluokka in {"12131", "12132"}:
+            return "road"
+        if kohdeluokka in {"12141", "12142", "12151", "12152"}:
+            return "small_road"
+        if kohdeluokka in {"12311", "12312", "12313"}:
+            return "path"
+        if kohdeluokka in {"12314", "12315", "12316", "12317"}:
+            return "small_path"
+    if properties.get("source_table") == "maatalousmaa" and symbol == "field":
+        return "cultivated_land"
     if properties.get("source_table") == "urheilujavirkistysalue" and symbol == "field":
         return "recreation_area"
     return symbol
@@ -1069,6 +1103,28 @@ def feature_symbol(feature: dict[str, Any]) -> str:
 
 def feature_style(feature: dict[str, Any]) -> dict[str, Any]:
     return SYMBOL_STYLES.get(feature_symbol(feature), DEFAULT_STYLE)
+
+
+def line_style_layers(style: dict[str, Any]) -> list[dict[str, Any]]:
+    inner_stroke = style.get("inner_stroke")
+    if not inner_stroke:
+        return [style]
+    return [
+        {
+            "stroke": style.get("stroke", "none"),
+            "stroke_width_mm": style.get("stroke_width_mm", 0.18),
+            "dasharray": style.get("dasharray"),
+        },
+        {
+            "stroke": inner_stroke,
+            "stroke_width_mm": style.get("inner_stroke_width_mm", style.get("stroke_width_mm", 0.18)),
+            "dasharray": style.get("inner_dasharray"),
+        },
+    ]
+
+
+def point_radius_mm(style: dict[str, Any]) -> float:
+    return float(style.get("point_radius_mm", max(float(style.get("stroke_width_mm", 0.18)) * 2.0, 0.35)))
 
 
 def feature_label_text(feature: dict[str, Any]) -> str | None:
@@ -1366,6 +1422,18 @@ def render_svg(
             f'width="{transform.page_width_mm:.3f}mm" height="{transform.page_height_mm:.3f}mm" '
             f'viewBox="0 0 {transform.page_width_mm:.3f} {transform.page_height_mm:.3f}">'
         ),
+        (
+            '<defs>'
+            '<pattern id="marsh" patternUnits="userSpaceOnUse" width="2.4" height="1.2">'
+            '<rect width="2.4" height="1.2" fill="#ffffff"/>'
+            '<path d="M0 0.6 H2.4" stroke="#008fd5" stroke-width="0.18" stroke-dasharray="1.0 0.55"/>'
+            '</pattern>'
+            '<pattern id="cultivated-land" patternUnits="userSpaceOnUse" width="2.0" height="2.0">'
+            '<rect width="2.0" height="2.0" fill="#f2c84b"/>'
+            '<circle cx="1.0" cy="1.0" r="0.12" fill="#000000"/>'
+            '</pattern>'
+            '</defs>'
+        ),
         '<rect x="0" y="0" width="100%" height="100%" fill="#ffffff"/>',
     ]
     for index, feature in enumerate(features, start=1):
@@ -1375,22 +1443,30 @@ def render_svg(
         stroke = style.get("stroke", "none")
         fill = style.get("fill", "none")
         stroke_width = float(style.get("stroke_width_mm", 0.18))
-        dasharray = style.get("dasharray")
-        dash_attr = f' stroke-dasharray="{dasharray}"' if dasharray else ""
+        fill_pattern = style.get("svg_fill_pattern")
+        if fill_pattern == "marsh":
+            fill = "url(#marsh)"
+        elif fill_pattern == "cultivated_land":
+            fill = "url(#cultivated-land)"
         for part in iter_geometry_parts(feature.get("geometry") or {}):
             if part["type"] == "Polygon":
                 path = " ".join(svg_path_for_ring(ring, transform) for ring in part.get("coordinates") or [])
                 lines.append(
                     f'<path d="{path}" stroke="{stroke}" fill="{fill}" '
-                    f'stroke-width="{stroke_width:.3f}" fill-rule="evenodd"{dash_attr}/>'
+                    f'stroke-width="{stroke_width:.3f}" fill-rule="evenodd"/>'
                 )
             elif part["type"] == "LineString":
                 path = svg_path_for_line(part.get("coordinates") or [], transform)
-                lines.append(
-                    f'<path d="{path}" stroke="{stroke}" fill="none" '
-                    f'stroke-width="{stroke_width:.3f}" stroke-linecap="round" '
-                    f'stroke-linejoin="round"{dash_attr}/>'
-                )
+                for layer in line_style_layers(style):
+                    layer_stroke = layer.get("stroke", "none")
+                    layer_width = float(layer.get("stroke_width_mm", stroke_width))
+                    dasharray = layer.get("dasharray")
+                    dash_attr = f' stroke-dasharray="{dasharray}"' if dasharray else ""
+                    lines.append(
+                        f'<path d="{path}" stroke="{layer_stroke}" fill="none" '
+                        f'stroke-width="{layer_width:.3f}" stroke-linecap="round" '
+                        f'stroke-linejoin="round"{dash_attr}/>'
+                    )
             elif part["type"] == "Point":
                 x, y = transform.to_mm(part.get("coordinates"))
                 label = feature_label_text(feature)
@@ -1403,7 +1479,7 @@ def render_svg(
                         f'font-style="{font_style}" fill="{fill}">{html.escape(label)}</text>'
                     )
                 else:
-                    radius = max(stroke_width * 2.0, 0.35)
+                    radius = point_radius_mm(style)
                     point_fill = fill if fill != "none" else stroke
                     lines.append(f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{radius:.3f}" fill="{point_fill}"/>')
     if include_layout:
@@ -1586,15 +1662,21 @@ def render_png(
                     for ring in rings:
                         for a, b in zip(ring, ring[1:] + ring[:1]):
                             draw_line(canvas, width, height, a, b, stroke, stroke_px)
-            elif part["type"] == "LineString" and stroke:
+            elif part["type"] == "LineString":
                 points = [to_px(point) for point in part.get("coordinates") or []]
-                for a, b in zip(points, points[1:]):
-                    draw_line(canvas, width, height, a, b, stroke, stroke_px)
+                for layer in line_style_layers(style):
+                    layer_stroke = color_to_rgb(str(layer.get("stroke", "none")))
+                    if not layer_stroke:
+                        continue
+                    layer_px = max(1, int(round(float(layer.get("stroke_width_mm", 0.18)) * px_per_mm)))
+                    for a, b in zip(points, points[1:]):
+                        draw_line(canvas, width, height, a, b, layer_stroke, layer_px)
             elif part["type"] == "Point":
                 if feature_label_text(feature):
                     continue
                 color = fill or stroke or (0, 0, 0)
-                draw_circle(canvas, width, height, to_px(part.get("coordinates")), max(2, stroke_px * 2), color)
+                radius_px = max(2, int(round(point_radius_mm(style) * px_per_mm)))
+                draw_circle(canvas, width, height, to_px(part.get("coordinates")), radius_px, color)
     if include_layout:
         purple = (111, 45, 189)
         for x_mm in north_line_x_positions(transform, north_line_spacing_m):
@@ -1620,6 +1702,15 @@ def pdf_point(transform: RenderTransform, coordinate: Any) -> tuple[float, float
 def pdf_mm(x_mm: float, y_mm: float, transform: RenderTransform) -> tuple[float, float]:
     scale = 72.0 / 25.4
     return x_mm * scale, (transform.page_height_mm - y_mm) * scale
+
+
+def append_pdf_dash(commands: list[str], dasharray: Any) -> None:
+    if not dasharray:
+        commands.append("[] 0 d")
+        return
+    scale = 72.0 / 25.4
+    values = [float(value) * scale for value in str(dasharray).split()]
+    commands.append("[" + " ".join(f"{value:.3f}" for value in values) + "] 0 d")
 
 
 def pdf_escape_text(value: str) -> str:
@@ -1651,6 +1742,33 @@ def append_pdf_label(commands: list[str], feature: dict[str, Any], part: dict[st
     commands.append(f"({pdf_escape_text(label)}) Tj")
     commands.append("ET")
     return True
+
+
+def append_pdf_circle(commands: list[str], center_x: float, center_y: float, radius: float) -> None:
+    kappa = 0.5522847498
+    control = radius * kappa
+    commands.append(f"{center_x + radius:.3f} {center_y:.3f} m")
+    commands.append(
+        f"{center_x + radius:.3f} {center_y + control:.3f} "
+        f"{center_x + control:.3f} {center_y + radius:.3f} "
+        f"{center_x:.3f} {center_y + radius:.3f} c"
+    )
+    commands.append(
+        f"{center_x - control:.3f} {center_y + radius:.3f} "
+        f"{center_x - radius:.3f} {center_y + control:.3f} "
+        f"{center_x - radius:.3f} {center_y:.3f} c"
+    )
+    commands.append(
+        f"{center_x - radius:.3f} {center_y - control:.3f} "
+        f"{center_x - control:.3f} {center_y - radius:.3f} "
+        f"{center_x:.3f} {center_y - radius:.3f} c"
+    )
+    commands.append(
+        f"{center_x + control:.3f} {center_y - radius:.3f} "
+        f"{center_x + radius:.3f} {center_y - control:.3f} "
+        f"{center_x + radius:.3f} {center_y:.3f} c"
+    )
+    commands.append("h")
 
 
 def append_pdf_layout(
@@ -1733,26 +1851,32 @@ def render_pdf(
                         commands.append(f"{x:.3f} {y:.3f} l")
                     commands.append("h")
                 commands.append("B" if fill and stroke else ("f" if fill else "S"))
-            elif part["type"] == "LineString" and stroke:
+            elif part["type"] == "LineString":
                 line = part.get("coordinates") or []
                 if len(line) < 2:
                     continue
-                commands.append(pdf_color_operator(stroke, stroke=True))
-                commands.append(f"{stroke_width:.3f} w")
-                x, y = pdf_point(transform, line[0])
-                commands.append(f"{x:.3f} {y:.3f} m")
-                for coordinate in line[1:]:
-                    x, y = pdf_point(transform, coordinate)
-                    commands.append(f"{x:.3f} {y:.3f} l")
-                commands.append("S")
+                for layer in line_style_layers(style):
+                    layer_stroke = color_to_rgb(str(layer.get("stroke", "none")))
+                    if not layer_stroke:
+                        continue
+                    layer_width = float(layer.get("stroke_width_mm", 0.18)) * 72.0 / 25.4
+                    commands.append(pdf_color_operator(layer_stroke, stroke=True))
+                    commands.append(f"{layer_width:.3f} w")
+                    append_pdf_dash(commands, layer.get("dasharray"))
+                    x, y = pdf_point(transform, line[0])
+                    commands.append(f"{x:.3f} {y:.3f} m")
+                    for coordinate in line[1:]:
+                        x, y = pdf_point(transform, coordinate)
+                        commands.append(f"{x:.3f} {y:.3f} l")
+                    commands.append("S")
             elif part["type"] == "Point":
                 if append_pdf_label(commands, feature, part, style, transform):
                     continue
                 color = fill or stroke or (0, 0, 0)
                 commands.append(pdf_color_operator(color, stroke=False))
                 x, y = pdf_point(transform, part.get("coordinates"))
-                radius = max(stroke_width * 2.0, 1.0)
-                commands.append(f"{x - radius:.3f} {y - radius:.3f} {radius * 2:.3f} {radius * 2:.3f} re")
+                radius = max(point_radius_mm(style) * 72.0 / 25.4, 1.0)
+                append_pdf_circle(commands, x, y, radius)
                 commands.append("f")
     if include_layout:
         append_pdf_layout(
@@ -1770,7 +1894,8 @@ def render_pdf(
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         (
             f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.3f} {page_height:.3f}] "
-            f"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> "
+            f"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+            f"/Encoding /WinAnsiEncoding >> >> >> "
             f"/Contents 4 0 R >>"
         ).encode("ascii"),
         b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"endstream",

@@ -62,26 +62,30 @@ Current source usage by feature type:
   layout infers the contour interval from `korkeusarvo` values when available;
   for example, a 2500-unit step is labelled as `Contours 2.5 m`.
 - Vegetation: not meaningfully generated yet. Some open or semi-open land-cover
-  tables such as `maatalousmaa`, `niitty`, `muuavoinalue`, and `puisto` are
-  mapped as `field`, and `kallioalue` is mapped as `open_rock`.
+  tables are mapped as open-land proxies: `maatalousmaa` is rendered as dotted
+  cultivated/open land, `niitty`, `muuavoinalue`, and `puisto` are rendered as
+  yellow open land, and `kallioalue` is mapped as `open_rock`.
   `urheilujavirkistysalue` is kept as `recreation_area` in the GeoJSON but is
   not painted by the default renderer because it can describe a broad
   sports/recreation land-use area rather than actual open runnable land.
   Forest vegetation and runnability need future source mapping or raster
   analysis.
-- Lakes and bodies of water: read from `jarvi` and `meri`, mapped as `lake`.
-  Water names are read from `paikannimi` when MML includes name points in the
-  extract, and rendered as blue italic labels.
+- Lakes and bodies of water: read from `jarvi` and `meri`, mapped as `lake`,
+  and rendered as a blue area with black edge. Water names are read from
+  `paikannimi` when MML includes name points in the extract, and rendered as
+  blue italic labels.
 - Streams and rivers: narrow streams are read from `virtavesikapea` and mapped
   as `stream`; wider water areas are read from `virtavesialue` and mapped as
   `river`.
-- Swamps: read from `suo` and `soistuma`, mapped as `swamp`.
+- Swamps: read from `suo` and `soistuma`, mapped as `swamp`, and rendered as
+  blue dashed marsh line screens.
 - Cliffs: read from `jyrkanne`, mapped as `cliff`. The tool does not currently
   infer cliffs from slope, laser scanning, or elevation models.
 - Roads: read from `tieviiva`. Selected `kohdeluokka` values are mapped as
-  `road`.
+  `major_road`, `road`, or `small_road`; major roads are drawn with a brown
+  infill and black casing, while smaller roads are black line symbols.
 - Paths: read from `tieviiva`. Selected `kohdeluokka` values are mapped as
-  `path`.
+  `path` or `small_path`, with different dashed black widths.
 - Forest density: not currently generated. No laser-scan, canopy, forest
   inventory, or vegetation-density raster is processed.
 - Buildings and other human-built objects: `rakennus` is mapped as `building`,
@@ -89,8 +93,9 @@ Current source usage by feature type:
   human-made features require more table mappings. `taajaanrakennettualue` is
   rendered as `private_yard`, an olive-green proxy for private/built-up yard
   areas; this is not a field-checked orienteering-map yard interpretation.
-- Rocks: `kivi` is mapped as `mapped_rock`. The tool does not currently infer
-  boulders or rocky ground from laser scanning or imagery.
+- Rocks: `kivi` is mapped as `mapped_rock` and rendered as a black circle. The
+  tool does not currently infer boulders or rocky ground from laser scanning or
+  imagery.
 
 ## Orientation And Size
 
@@ -376,14 +381,16 @@ too aggressively in a dense area, lower it, for example
 
 The default mapping is conservative:
 
-- `tieviiva` -> `road` or `path` by `kohdeluokka`
+- `tieviiva` -> `major_road`, `road`, `small_road`, `path`, or `small_path`
+  by `kohdeluokka`
 - `korkeuskayra` -> `contour`
 - `jyrkanne` -> `cliff`
 - `virtavesikapea` -> `stream`
 - `jarvi`, `meri` -> `lake`
 - `virtavesialue` -> `river`
 - `suo`, `soistuma` -> `swamp`
-- `maatalousmaa`, `niitty`, `muuavoinalue`, `puisto` -> `field`
+- `maatalousmaa` -> `cultivated_land`
+- `niitty`, `muuavoinalue`, `puisto` -> `field`
 - `urheilujavirkistysalue` -> `recreation_area` (kept in GeoJSON, not painted)
 - `taajaanrakennettualue` -> `private_yard`
 - `kallioalue` -> `open_rock`

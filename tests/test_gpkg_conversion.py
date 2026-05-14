@@ -17,12 +17,14 @@ from mml_omap.cli import (
     enclosing_grid_bbox,
     estimate_finland_magnetic_declination_deg,
     estimate_finland_total_correction_deg,
+    feature_symbol,
     meridian_convergence_deg,
     geojson_bbox,
     geojson_map_frame_declination,
     infer_contour_interval_m,
     merge_contour_features,
     read_env_file_value,
+    render_pdf,
     render_svg,
     validate_orienteering_bbox_size,
 )
@@ -163,6 +165,61 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertLess(svg.index('fill="#f2c84b"'), svg.index('stroke="#9b5a28"'))
 
+    def test_tieviiva_symbol_is_refined_from_kohdeluokka_at_render_time(self) -> None:
+        self.assertEqual(
+            feature_symbol({"properties": {"source_table": "tieviiva", "symbol": "road", "kohdeluokka": 12121}}),
+            "major_road",
+        )
+        self.assertEqual(
+            feature_symbol({"properties": {"source_table": "tieviiva", "symbol": "path", "kohdeluokka": 12314}}),
+            "small_path",
+        )
+
+    def test_svg_render_uses_iof_like_water_marsh_field_and_road_symbols(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"symbol": "lake", "object_type": "area"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[0, 0], [300, 0], [300, 300], [0, 300], [0, 0]]],
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "properties": {"source_table": "suo", "symbol": "swamp", "object_type": "area"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[350, 0], [650, 0], [650, 300], [350, 300], [350, 0]]],
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "properties": {"source_table": "maatalousmaa", "symbol": "field", "object_type": "area"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[700, 0], [1000, 0], [1000, 300], [700, 300], [700, 0]]],
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "properties": {"source_table": "tieviiva", "symbol": "road", "kohdeluokka": 12121},
+                    "geometry": {"type": "LineString", "coordinates": [[0, 500], [1000, 500]]},
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "map.svg"
+            render_svg(geojson, output, transform=RenderTransform([0, 0, 1000, 600], 5000, 5))
+            svg = output.read_text(encoding="utf-8")
+
+        self.assertIn('stroke="#000000" fill="#b9e3f7"', svg)
+        self.assertIn("url(#marsh)", svg)
+        self.assertIn("url(#cultivated-land)", svg)
+        self.assertIn('stroke="#8b5a2b"', svg)
+
     def test_svg_render_includes_layout_metadata_and_north_lines(self) -> None:
         geojson = {"type": "FeatureCollection", "features": []}
         with tempfile.TemporaryDirectory() as directory:
@@ -189,7 +246,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
             "features": [
                 {
                     "type": "Feature",
-                    "properties": {"symbol": "water_label", "object_type": "point", "teksti": "Lilltrask"},
+                    "properties": {"symbol": "water_label", "object_type": "point", "teksti": "Lillträsk"},
                     "geometry": {"type": "Point", "coordinates": [500, 250]},
                 }
             ],
@@ -199,9 +256,33 @@ class OrienteeringBoundsTest(unittest.TestCase):
             render_svg(geojson, output, transform=RenderTransform([0, 0, 1000, 500], 5000, 5))
             svg = output.read_text(encoding="utf-8")
 
-        self.assertIn(">Lilltrask</text>", svg)
+        self.assertIn(">Lillträsk</text>", svg)
         self.assertIn('fill="#008fd5"', svg)
-        self.assertNotIn("<circle", svg)
+        self.assertNotIn('<circle cx="105.000"', svg)
+
+    def test_pdf_render_uses_winansi_for_finnish_and_swedish_letters(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"symbol": "water_label", "object_type": "point", "teksti": "Mössenkärr"},
+                    "geometry": {"type": "Point", "coordinates": [500, 250]},
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "map.pdf"
+            render_pdf(
+                geojson,
+                output,
+                transform=RenderTransform([0, 0, 1000, 500], 5000, 5),
+                map_title_text="Mössenkärr",
+            )
+            pdf = output.read_bytes()
+
+        self.assertIn(b"/Encoding /WinAnsiEncoding", pdf)
+        self.assertIn("Mössenkärr".encode("latin-1"), pdf)
 
     def test_contour_fragments_with_same_height_are_merged_for_rendering(self) -> None:
         features = [

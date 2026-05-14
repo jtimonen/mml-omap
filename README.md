@@ -379,7 +379,14 @@ too aggressively in a dense area, lower it, for example
 
 ## Mapping
 
-The default mapping is conservative:
+The authoritative project mapping table is documented in
+[docs/mml-to-isom-mapping.md](docs/mml-to-isom-mapping.md). It follows the same
+attribute-to-ISOM-code idea as Karttapullautin `vectorconf` files, but with
+MML-specific tables and `kohdeluokka` values.
+
+The default mapping is conservative. The names below describe the internal
+classification used to choose an ISOM symbol, but generated GeoJSON does not
+write these names into `properties.symbol`.
 
 - `tieviiva` -> `major_road`, `road`, `small_road`, `path`, or `small_path`
   by `kohdeluokka`
@@ -391,28 +398,43 @@ The default mapping is conservative:
 - `suo`, `soistuma` -> `swamp`
 - `maatalousmaa` -> `cultivated_land`
 - `niitty`, `muuavoinalue`, `puisto` -> `field`
-- `urheilujavirkistysalue` -> `recreation_area` (kept in GeoJSON, not painted)
+- `urheilujavirkistysalue` -> `recreation_area` (not emitted by default,
+  because no ISOM symbol is assigned)
 - `taajaanrakennettualue` -> `private_yard`
 - `kallioalue` -> `open_rock`
 - `rakennus` -> `building`
 - `kivi` -> `mapped_rock`
 - `aita` -> `fence`
-- `paikannimi` -> `place_label` or `water_label`
+- `paikannimi` -> `place_label` or `water_label` internally, but not emitted
+  by default because place-name labels are not numbered ISOM terrain symbols
+
+Every generated feature has an ISOM-only symbol contract:
+
+- `symbol`: the ISOM symbol number, for example `101`, `301`, `308`, `412`,
+  `502`, `505`, or `521`.
+- `iof_symbol_number`: the same ISOM symbol number, duplicated for explicitness.
+- `iof_symbol_name`: the ISOM symbol name used by the built-in mapping.
+
+Generated GeoJSON never uses internal names such as `major_road`,
+`small_path`, `private_yard`, or `water_label` as `properties.symbol`. If a
+built-in or custom mapping does not resolve to an ISOM number, it is skipped by
+default. With `--include-unmapped`, such features may be retained for
+inspection, but they do not receive a `symbol` property.
 
 Override or extend mappings with JSON:
 
 ```json
 {
   "metsamaankasvillisuus": {
-    "symbol": "thick_forest",
+    "symbol": "406",
     "object_type": "area"
   },
   "tieviiva": {
     "object_type": "line",
-    "symbol": "path",
+    "symbol": "505",
     "kohdeluokka": {
-      "12111": "road",
-      "12316": "path"
+      "12111": "502",
+      "12316": "506"
     }
   }
 }

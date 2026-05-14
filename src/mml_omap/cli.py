@@ -108,21 +108,21 @@ SYMBOL_STYLES = {
     "index_contour": {"stroke": "#9b5a28", "stroke_width_mm": 0.25, "fill": "none"},
     "form_line": {"stroke": "#9b5a28", "stroke_width_mm": 0.10, "fill": "none", "dasharray": "1.0 0.5"},
     "depression_contour": {"stroke": "#9b5a28", "stroke_width_mm": 0.14, "fill": "none"},
-    "path": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none", "dasharray": "1.0 0.7"},
-    "small_path": {"stroke": "#000000", "stroke_width_mm": 0.12, "fill": "none", "dasharray": "0.7 0.7"},
-    "small_road": {"stroke": "#000000", "stroke_width_mm": 0.28, "fill": "none"},
-    "road": {"stroke": "#000000", "stroke_width_mm": 0.42, "fill": "none"},
+    "path": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none", "dasharray": "1.5 0.5"},
+    "small_path": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none", "dasharray": "0.75 0.5"},
+    "small_road": {"stroke": "#000000", "stroke_width_mm": 0.25, "fill": "none", "dasharray": "3.0 0.75"},
+    "road": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
     "major_road": {
         "stroke": "#000000",
-        "stroke_width_mm": 0.62,
-        "inner_stroke": "#8b5a2b",
-        "inner_stroke_width_mm": 0.38,
+        "stroke_width_mm": 0.58,
+        "inner_stroke": "#b68a57",
+        "inner_stroke_width_mm": 0.30,
         "fill": "none",
     },
     "railway": {"stroke": "#000000", "stroke_width_mm": 0.28, "fill": "none", "dasharray": "2.0 1.0"},
-    "stream": {"stroke": "#008fd5", "stroke_width_mm": 0.28, "fill": "none"},
-    "wide_stream": {"stroke": "#008fd5", "stroke_width_mm": 0.45, "fill": "none"},
-    "river": {"stroke": "#008fd5", "stroke_width_mm": 0.50, "fill": "none"},
+    "stream": {"stroke": "#008fd5", "stroke_width_mm": 0.18, "fill": "none"},
+    "wide_stream": {"stroke": "#008fd5", "stroke_width_mm": 0.30, "fill": "none"},
+    "river": {"stroke": "#008fd5", "stroke_width_mm": 0.30, "fill": "none"},
     "cliff": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
     "fence": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none"},
     "lake": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#b9e3f7"},
@@ -133,11 +133,65 @@ SYMBOL_STYLES = {
     "private_yard": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#b7bf63"},
     "thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#49a64a"},
     "very_thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#16702f"},
-    "open_rock": {"stroke": "#777777", "stroke_width_mm": 0.08, "fill": "#d9d9d9"},
+    "open_rock": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#d9d9d9"},
     "building": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#222222"},
-    "mapped_rock": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#000000", "point_radius_mm": 0.42},
+    "mapped_rock": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#000000", "point_radius_mm": 0.20},
     "place_label": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#000000", "font_size_mm": 3.0},
     "water_label": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#008fd5", "font_size_mm": 3.0, "font_style": "italic"},
+}
+
+IOF_SYMBOLS = {
+    "contour": ("101", "Contour"),
+    "index_contour": ("102", "Index contour"),
+    "form_line": ("103", "Form line"),
+    "depression_contour": ("101", "Contour"),
+    "cliff": ("202", "Cliff"),
+    "open_rock": ("214", "Bare rock"),
+    "mapped_rock": ("204", "Boulder"),
+    "lake": ("301", "Uncrossable body of water"),
+    "river": ("301", "Uncrossable body of water"),
+    "wide_stream": ("304", "Crossable watercourse"),
+    "stream": ("305", "Small crossable watercourse"),
+    "swamp": ("308", "Marsh"),
+    "field": ("401", "Open land"),
+    "thick_forest": ("406", "Vegetation: slow running"),
+    "very_thick_forest": ("410", "Vegetation: fight"),
+    "cultivated_land": ("412", "Cultivated land"),
+    "private_yard": ("520", "Area that shall not be entered"),
+    "major_road": ("502", "Wide road"),
+    "road": ("503", "Road"),
+    "small_road": ("504", "Vehicle track"),
+    "path": ("505", "Footpath"),
+    "small_path": ("506", "Small footpath"),
+    "railway": ("509", "Railway"),
+    "fence": ("516", "Fence"),
+    "building": ("521", "Building"),
+}
+
+IOF_NUMBER_TO_RENDER_SYMBOL = {
+    "101": "contour",
+    "102": "index_contour",
+    "103": "form_line",
+    "202": "cliff",
+    "204": "mapped_rock",
+    "214": "open_rock",
+    "301": "lake",
+    "304": "wide_stream",
+    "305": "stream",
+    "308": "swamp",
+    "401": "field",
+    "406": "thick_forest",
+    "410": "very_thick_forest",
+    "412": "cultivated_land",
+    "502": "major_road",
+    "503": "road",
+    "504": "small_road",
+    "505": "path",
+    "506": "small_path",
+    "509": "railway",
+    "516": "fence",
+    "520": "private_yard",
+    "521": "building",
 }
 
 DEFAULT_STYLE = {"stroke": "#444444", "stroke_width_mm": 0.18, "fill": "none"}
@@ -599,16 +653,20 @@ def convert_gpkg_to_geojson(
                         continue
                 properties = row_properties(row, geometry_column)
                 object_type, symbol = classify_feature(table, properties, geometry, rule)
-                if symbol is None and not include_unmapped:
+                metadata = iof_symbol_metadata(symbol)
+                iof_symbol_number = metadata.get("iof_symbol_number")
+                if (symbol is None or iof_symbol_number is None) and not include_unmapped:
                     continue
                 properties.update(
                     {
                         "source": "Maanmittauslaitos Maastotietokanta",
                         "source_table": table,
-                        "symbol": symbol or table,
                         "object_type": object_type or object_type_from_geojson(geometry["type"]),
+                        **metadata,
                     }
                 )
+                if iof_symbol_number is not None:
+                    properties["symbol"] = iof_symbol_number
                 features.append({"type": "Feature", "properties": properties, "geometry": geometry})
                 rows_kept += 1
                 if rows_seen % 10000 == 0:
@@ -677,6 +735,18 @@ def classify_feature(
     if isinstance(kohdeluokka_rules, dict) and kohdeluokka is not None:
         symbol = kohdeluokka_rules.get(str(kohdeluokka), symbol)
     return str(rule.get("object_type", object_type)), str(symbol) if symbol else None
+
+
+def iof_symbol_metadata(symbol: str | None) -> dict[str, Any]:
+    if not symbol:
+        return {"iof_symbol_number": None, "iof_symbol_name": None}
+    if symbol in IOF_NUMBER_TO_RENDER_SYMBOL:
+        symbol = IOF_NUMBER_TO_RENDER_SYMBOL[symbol]
+    mapped = IOF_SYMBOLS.get(symbol)
+    if mapped:
+        number, name = mapped
+        return {"iof_symbol_number": number, "iof_symbol_name": name}
+    return {"iof_symbol_number": None, "iof_symbol_name": "No ISOM feature symbol assigned"}
 
 
 def object_type_from_geojson(geometry_type: str) -> str:
@@ -1090,6 +1160,14 @@ class RenderTransform:
 def feature_symbol(feature: dict[str, Any]) -> str:
     properties = feature.get("properties") or {}
     symbol = str(properties.get("symbol", properties.get("source_table", "unknown")))
+    iof_symbol_number = properties.get("iof_symbol_number")
+    if iof_symbol_number is not None:
+        mapped = IOF_NUMBER_TO_RENDER_SYMBOL.get(str(iof_symbol_number))
+        if mapped:
+            return mapped
+    mapped = IOF_NUMBER_TO_RENDER_SYMBOL.get(symbol)
+    if mapped:
+        return mapped
     if properties.get("source_table") == "tieviiva":
         kohdeluokka = str(properties.get("kohdeluokka", ""))
         if kohdeluokka in {"12111", "12112", "12121", "12122", "12131", "12132"}:

@@ -22,6 +22,7 @@ from mml_omap.cli import (
     geojson_bbox,
     geojson_map_frame_declination,
     infer_contour_interval_m,
+    iof_symbol_metadata,
     merge_contour_features,
     read_env_file_value,
     render_pdf,
@@ -71,8 +72,37 @@ class GeoPackageConversionTest(unittest.TestCase):
         feature = geojson["features"][0]
         self.assertEqual(feature["geometry"]["type"], "LineString")
         self.assertEqual(feature["properties"]["source_table"], "tieviiva")
-        self.assertEqual(feature["properties"]["symbol"], "path")
+        self.assertEqual(feature["properties"]["symbol"], "505")
         self.assertEqual(feature["properties"]["object_type"], "line")
+        self.assertEqual(feature["properties"]["iof_symbol_number"], "505")
+        self.assertEqual(feature["properties"]["iof_symbol_name"], "Footpath")
+
+    def test_convert_gpkg_does_not_emit_non_isom_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            connection = sqlite3.connect(gpkg)
+            connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+            connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+            connection.execute("INSERT INTO gpkg_contents VALUES ('paikannimi', 'features')")
+            connection.execute("INSERT INTO gpkg_geometry_columns VALUES ('paikannimi', 'geom')")
+            connection.execute("CREATE TABLE paikannimi (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, teksti TEXT, geom BLOB)")
+            wkb = b"\x01" + struct.pack("<I", 1) + struct.pack("<dd", 385396.0, 6672568.0)
+            gpkg_geometry = b"GP" + bytes([0, 1]) + struct.pack("<I", 3067) + wkb
+            connection.execute(
+                "INSERT INTO paikannimi (kohdeluokka, teksti, geom) VALUES (?, ?, ?)",
+                (35010, "Lillträsk", gpkg_geometry),
+            )
+            connection.commit()
+            connection.close()
+
+            geojson = convert_gpkg_to_geojson(
+                gpkg,
+                bbox=[385395, 6672567, 385397, 6672569],
+                table_rules=DEFAULT_TABLE_RULES,
+                include_unmapped=False,
+            )
+
+        self.assertEqual(geojson["features"], [])
 
 
 class OrienteeringBoundsTest(unittest.TestCase):
@@ -167,7 +197,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
     def test_tieviiva_symbol_is_refined_from_kohdeluokka_at_render_time(self) -> None:
         self.assertEqual(
-            feature_symbol({"properties": {"source_table": "tieviiva", "symbol": "road", "kohdeluokka": 12121}}),
+            feature_symbol({"properties": {"source_table": "tieviiva", "symbol": "502", "iof_symbol_number": "502"}}),
             "major_road",
         )
         self.assertEqual(
@@ -178,6 +208,12 @@ class OrienteeringBoundsTest(unittest.TestCase):
             feature_symbol({"properties": {"source_table": "virtavesikapea", "symbol": "stream", "kohdeluokka": 36312}}),
             "wide_stream",
         )
+
+    def test_iof_symbol_metadata_is_available_for_known_symbols(self) -> None:
+        self.assertEqual(iof_symbol_metadata("lake")["iof_symbol_number"], "301")
+        self.assertEqual(iof_symbol_metadata("swamp")["iof_symbol_number"], "308")
+        self.assertEqual(iof_symbol_metadata("major_road")["iof_symbol_number"], "502")
+        self.assertIsNone(iof_symbol_metadata("place_label")["iof_symbol_number"])
 
     def test_svg_render_uses_iof_like_water_marsh_field_and_road_symbols(self) -> None:
         geojson = {
@@ -222,7 +258,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertIn('stroke="#000000" fill="#b9e3f7"', svg)
         self.assertIn("url(#marsh)", svg)
         self.assertIn("url(#cultivated-land)", svg)
-        self.assertIn('stroke="#8b5a2b"', svg)
+        self.assertIn('stroke="#b68a57"', svg)
 
     def test_svg_render_includes_layout_metadata_and_north_lines(self) -> None:
         geojson = {"type": "FeatureCollection", "features": []}

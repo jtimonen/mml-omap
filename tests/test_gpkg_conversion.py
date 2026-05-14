@@ -183,6 +183,26 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertIn("KOK 8.50 deg", svg)
         self.assertIn('stroke="#6f2dbd"', svg)
 
+    def test_svg_render_draws_place_and_water_labels(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"symbol": "water_label", "object_type": "point", "teksti": "Lilltrask"},
+                    "geometry": {"type": "Point", "coordinates": [500, 250]},
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "map.svg"
+            render_svg(geojson, output, transform=RenderTransform([0, 0, 1000, 500], 5000, 5))
+            svg = output.read_text(encoding="utf-8")
+
+        self.assertIn(">Lilltrask</text>", svg)
+        self.assertIn('fill="#008fd5"', svg)
+        self.assertNotIn("<circle", svg)
+
     def test_contour_fragments_with_same_height_are_merged_for_rendering(self) -> None:
         features = [
             {

@@ -70,6 +70,8 @@ Current source usage by feature type:
   Forest vegetation and runnability need future source mapping or raster
   analysis.
 - Lakes and bodies of water: read from `jarvi` and `meri`, mapped as `lake`.
+  Water names are read from `paikannimi` when MML includes name points in the
+  extract, and rendered as blue italic labels.
 - Streams and rivers: narrow streams are read from `virtavesikapea` and mapped
   as `stream`; wider water areas are read from `virtavesialue` and mapped as
   `river`.
@@ -84,7 +86,9 @@ Current source usage by feature type:
   inventory, or vegetation-density raster is processed.
 - Buildings and other human-built objects: `rakennus` is mapped as `building`,
   `rakennusreunaviiva` as building linework, and `aita` as `fence`. Other
-  human-made features require more table mappings.
+  human-made features require more table mappings. `taajaanrakennettualue` is
+  rendered as `private_yard`, an olive-green proxy for private/built-up yard
+  areas; this is not a field-checked orienteering-map yard interpretation.
 - Rocks: `kivi` is mapped as `mapped_rock`. The tool does not currently infer
   boulders or rocky ground from laser scanning or imagery.
 
@@ -301,17 +305,17 @@ want to override them.
 
 ## Espoon Keskuspuisto Example
 
-This example fetches an approximately 2.05 km x 1.43 km rectangle around an
-approximate point in Espoon keskuspuisto. The bbox is in EPSG:3067 meters.
+This example fetches an approximately 2.05 km x 1.43 km rectangle around
+Mössenkärr in Espoon keskuspuisto. The bbox is in EPSG:3067 meters.
 
 Generate the GeoJSON:
-`uv run mml-omap generate espoo-keskuspuisto-2p05km-1p43km.geojson --bbox 372523,6674094,374573,6675528`
+`uv run mml-omap generate espoo-keskuspuisto-mossenkarr.geojson --bbox 370867,6674147,372917,6675581`
 
 Render it to SVG:
-`uv run mml-omap render-svg espoo-keskuspuisto-2p05km-1p43km.geojson espoo-keskuspuisto-2p05km-1p43km.svg --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"`
+`uv run mml-omap render-svg espoo-keskuspuisto-mossenkarr.geojson espoo-keskuspuisto-mossenkarr.svg --scale 5000 --map-title "Espoon keskuspuisto - Mössenkärr" --map-maker "Your name"`
 
 Or render it to PDF at 1:5000:
-`uv run mml-omap render-pdf espoo-keskuspuisto-2p05km-1p43km.geojson espoo-keskuspuisto-2p05km-1p43km.pdf --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"`
+`uv run mml-omap render-pdf espoo-keskuspuisto-mossenkarr.geojson espoo-keskuspuisto-mossenkarr.pdf --scale 5000 --map-title "Espoon keskuspuisto - Mössenkärr" --map-maker "Your name"`
 
 ## Download Only
 
@@ -362,9 +366,11 @@ border, and magnetic-north alignment lines. Use `--map-title`, `--map-maker`,
 north-line spacing. Use `--no-layout` for geometry-only output.
 
 Render commands also merge contour fragments with the same `korkeusarvo` when
-their endpoints touch within `--contour-merge-tolerance-m` meters. This removes
-many artificial-looking breaks from MML contour line fragments without changing
-the intermediate GeoJSON.
+their endpoints touch within `--contour-merge-tolerance-m` meters. The default
+is 20 m, which removes many artificial-looking breaks from MML contour line
+fragments without changing the intermediate GeoJSON. If that connects contours
+too aggressively in a dense area, lower it, for example
+`--contour-merge-tolerance-m 5`.
 
 ## Mapping
 
@@ -379,10 +385,12 @@ The default mapping is conservative:
 - `suo`, `soistuma` -> `swamp`
 - `maatalousmaa`, `niitty`, `muuavoinalue`, `puisto` -> `field`
 - `urheilujavirkistysalue` -> `recreation_area` (kept in GeoJSON, not painted)
+- `taajaanrakennettualue` -> `private_yard`
 - `kallioalue` -> `open_rock`
 - `rakennus` -> `building`
 - `kivi` -> `mapped_rock`
 - `aita` -> `fence`
+- `paikannimi` -> `place_label` or `water_label`
 
 Override or extend mappings with JSON:
 

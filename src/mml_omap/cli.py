@@ -82,6 +82,15 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "kallioalue": {"object_type": "area", "symbol": "open_rock"},
     "rakennus": {"object_type": "area", "symbol": "building"},
     "kivi": {"object_type": "point", "symbol": "mapped_rock"},
+    "paikannimi": {
+        "object_type": "point",
+        "symbol": "place_label",
+        "kohdeluokka": {
+            "35010": "water_label",
+            "35030": "water_label",
+        },
+    },
+    "taajaanrakennettualue": {"object_type": "area", "symbol": "private_yard"},
 }
 
 SYMBOL_STYLES = {
@@ -99,20 +108,24 @@ SYMBOL_STYLES = {
     "swamp": {"stroke": "#008fd5", "stroke_width_mm": 0.10, "fill": "#d8f0e8"},
     "field": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#f2c84b"},
     "recreation_area": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "none"},
+    "private_yard": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#b7bf63"},
     "thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#49a64a"},
     "very_thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#16702f"},
     "open_rock": {"stroke": "#777777", "stroke_width_mm": 0.08, "fill": "#d9d9d9"},
     "building": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#222222"},
     "mapped_rock": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#000000"},
+    "place_label": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#000000", "font_size_mm": 3.0},
+    "water_label": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#008fd5", "font_size_mm": 3.0, "font_style": "italic"},
 }
 
 DEFAULT_STYLE = {"stroke": "#444444", "stroke_width_mm": 0.18, "fill": "none"}
 DEFAULT_NORTH_LINE_SPACING_M = 300.0
-DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 1.0
+DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 20.0
 
 SYMBOL_RENDER_ORDER = {
     "field": 100,
     "recreation_area": 105,
+    "private_yard": 108,
     "thick_forest": 110,
     "very_thick_forest": 120,
     "open_rock": 130,
@@ -130,6 +143,8 @@ SYMBOL_RENDER_ORDER = {
     "cliff": 430,
     "building": 500,
     "mapped_rock": 600,
+    "place_label": 700,
+    "water_label": 700,
 }
 
 
@@ -1056,6 +1071,14 @@ def feature_style(feature: dict[str, Any]) -> dict[str, Any]:
     return SYMBOL_STYLES.get(feature_symbol(feature), DEFAULT_STYLE)
 
 
+def feature_label_text(feature: dict[str, Any]) -> str | None:
+    symbol = feature_symbol(feature)
+    if symbol not in {"place_label", "water_label"}:
+        return None
+    text = (feature.get("properties") or {}).get("teksti")
+    return str(text) if text else None
+
+
 def feature_render_order(feature: dict[str, Any]) -> int:
     symbol = feature_symbol(feature)
     if symbol in SYMBOL_RENDER_ORDER:
@@ -1151,6 +1174,32 @@ def merge_contour_features(features: list[dict[str, Any]], tolerance_m: float = 
             geometry = {"type": "MultiLineString", "coordinates": lines}
         output.append({"type": "Feature", "properties": properties, "geometry": geometry})
     return output
+
+
+def dedupe_label_features(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int, int]] = set()
+    for feature in features:
+        label = feature_label_text(feature)
+        if not label:
+            output.append(feature)
+            continue
+        geometry = feature.get("geometry") or {}
+        if geometry.get("type") != "Point":
+            output.append(feature)
+            continue
+        coordinates = geometry.get("coordinates") or [0, 0]
+        key = (feature_symbol(feature), label, round(float(coordinates[0]) * 10), round(float(coordinates[1]) * 10))
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(feature)
+    return output
+
+
+def prepare_render_features(geojson: dict[str, Any], contour_merge_tolerance_m: float) -> list[dict[str, Any]]:
+    features = merge_contour_features(geojson_features(geojson), contour_merge_tolerance_m)
+    return sorted_render_features(dedupe_label_features(features))
 
 
 def iter_geometry_parts(geometry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1308,7 +1357,7 @@ def render_svg(
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
     contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
-    features = sorted_render_features(merge_contour_features(geojson_features(geojson), contour_merge_tolerance_m))
+    features = prepare_render_features(geojson, contour_merge_tolerance_m)
     progress(f"Rendering SVG with {len(features)} features...")
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -1344,9 +1393,19 @@ def render_svg(
                 )
             elif part["type"] == "Point":
                 x, y = transform.to_mm(part.get("coordinates"))
-                radius = max(stroke_width * 2.0, 0.35)
-                point_fill = fill if fill != "none" else stroke
-                lines.append(f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{radius:.3f}" fill="{point_fill}"/>')
+                label = feature_label_text(feature)
+                if label:
+                    font_size = float(style.get("font_size_mm", 3.0))
+                    font_style = str(style.get("font_style", "normal"))
+                    lines.append(
+                        f'<text x="{x:.3f}" y="{y:.3f}" text-anchor="middle" '
+                        f'font-family="Arial, Helvetica, sans-serif" font-size="{font_size:.3f}" '
+                        f'font-style="{font_style}" fill="{fill}">{html.escape(label)}</text>'
+                    )
+                else:
+                    radius = max(stroke_width * 2.0, 0.35)
+                    point_fill = fill if fill != "none" else stroke
+                    lines.append(f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{radius:.3f}" fill="{point_fill}"/>')
     if include_layout:
         append_svg_layout(
             lines,
@@ -1500,7 +1559,7 @@ def render_png(
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
     contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
-    features = sorted_render_features(merge_contour_features(geojson_features(geojson), contour_merge_tolerance_m))
+    features = prepare_render_features(geojson, contour_merge_tolerance_m)
     progress(f"Rendering PNG with {len(features)} features at {dpi} dpi...")
     width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
     height = max(1, int(round(transform.page_height_mm / 25.4 * dpi)))
@@ -1532,6 +1591,8 @@ def render_png(
                 for a, b in zip(points, points[1:]):
                     draw_line(canvas, width, height, a, b, stroke, stroke_px)
             elif part["type"] == "Point":
+                if feature_label_text(feature):
+                    continue
                 color = fill or stroke or (0, 0, 0)
                 draw_circle(canvas, width, height, to_px(part.get("coordinates")), max(2, stroke_px * 2), color)
     if include_layout:
@@ -1573,6 +1634,23 @@ def append_pdf_text(commands: list[str], x_mm: float, y_mm: float, size_pt: floa
     commands.append(f"{x:.3f} {y:.3f} Td")
     commands.append(f"({pdf_escape_text(text)}) Tj")
     commands.append("ET")
+
+
+def append_pdf_label(commands: list[str], feature: dict[str, Any], part: dict[str, Any], style: dict[str, Any], transform: RenderTransform) -> bool:
+    label = feature_label_text(feature)
+    if not label:
+        return False
+    fill = color_to_rgb(str(style.get("fill", "#000000"))) or (0, 0, 0)
+    x_mm, y_mm = transform.to_mm(part.get("coordinates"))
+    x, y = pdf_mm(x_mm, y_mm, transform)
+    size_pt = float(style.get("font_size_mm", 3.0)) * 72.0 / 25.4
+    commands.append(pdf_color_operator(fill, stroke=False))
+    commands.append("BT")
+    commands.append(f"/F1 {size_pt:.2f} Tf")
+    commands.append(f"{x:.3f} {y:.3f} Td")
+    commands.append(f"({pdf_escape_text(label)}) Tj")
+    commands.append("ET")
+    return True
 
 
 def append_pdf_layout(
@@ -1626,7 +1704,7 @@ def render_pdf(
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
     contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
-    features = sorted_render_features(merge_contour_features(geojson_features(geojson), contour_merge_tolerance_m))
+    features = prepare_render_features(geojson, contour_merge_tolerance_m)
     progress(f"Rendering PDF with {len(features)} features...")
     page_width = transform.page_width_mm * 72.0 / 25.4
     page_height = transform.page_height_mm * 72.0 / 25.4
@@ -1668,6 +1746,8 @@ def render_pdf(
                     commands.append(f"{x:.3f} {y:.3f} l")
                 commands.append("S")
             elif part["type"] == "Point":
+                if append_pdf_label(commands, feature, part, style, transform):
+                    continue
                 color = fill or stroke or (0, 0, 0)
                 commands.append(pdf_color_operator(color, stroke=False))
                 x, y = pdf_point(transform, part.get("coordinates"))
@@ -1974,7 +2054,12 @@ def build_parser() -> argparse.ArgumentParser:
     common_render.add_argument("--map-title", help="Title text printed in SVG/PDF layout metadata.")
     common_render.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG/PDF layout metadata.")
     common_render.add_argument("--contour-interval-m", default="auto", help="Contour interval label for SVG/PDF layout metadata, or auto.")
-    common_render.add_argument("--contour-merge-tolerance-m", type=float, default=DEFAULT_CONTOUR_MERGE_TOLERANCE_M)
+    common_render.add_argument(
+        "--contour-merge-tolerance-m",
+        type=float,
+        default=DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
+        help="Join same-elevation contour fragments with endpoints this many meters apart before rendering.",
+    )
     common_render.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
     common_render.add_argument("--no-layout", action="store_true", help="Render only map geometry, without title, footer, frame, or north lines.")
     common_render.add_argument(

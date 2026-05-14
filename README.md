@@ -305,27 +305,14 @@ small for an orienteering map, so this is mostly a fast smoke test for download,
 conversion, clipping, contours, and rendering; use a larger bbox for a useful
 map preview.
 
-```
-BBOX=373498,6674761,373598,6674861
-```
-
 Generate the GeoJSON:
-
-```
-uv run mml-omap generate espoo-keskuspuisto-100m.geojson --bbox "$BBOX"
-```
+`uv run mml-omap generate espoo-keskuspuisto-100m.geojson --bbox 373498,6674761,373598,6674861`
 
 Render it to SVG:
-
-```
-uv run mml-omap render-svg espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.svg --scale 5000
-```
+`uv run mml-omap render-svg espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.svg --scale 5000`
 
 Or render it to PDF at 1:5000:
-
-```
-uv run mml-omap render-pdf espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.pdf --scale 5000
-```
+`uv run mml-omap render-pdf espoo-keskuspuisto-100m.geojson espoo-keskuspuisto-100m.pdf --scale 5000`
 
 ## Download Only
 
@@ -366,11 +353,7 @@ Rendering uses the GeoJSON extent by default. Pass `--bbox` to force the map
 frame:
 
 ```
-BBOX=385396,6672568,389620,6677160
-```
-
-```
-uv run mml-omap render-pdf output.geojson map.pdf --bbox "$BBOX" --magnetic-declination-deg 10.5 --scale 10000 --margin-mm 5
+uv run mml-omap render-pdf output.geojson map.pdf --bbox 385396,6672568,389620,6677160 --magnetic-declination-deg 10.5 --scale 10000 --margin-mm 5
 ```
 
 ## Mapping

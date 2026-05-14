@@ -13,6 +13,7 @@ import json
 import math
 import os
 import sqlite3
+import ssl
 import struct
 import sys
 import time
@@ -22,6 +23,8 @@ import zipfile
 import zlib
 from pathlib import Path
 from typing import Any
+
+import certifi
 
 
 MML_OGC_PROCESSES_URL = (
@@ -354,9 +357,13 @@ def auth_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Basic {token}"}
 
 
+def https_context() -> ssl.SSLContext:
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def http_json(url: str, api_key: str) -> dict[str, Any]:
     request = urllib.request.Request(url, headers={**auth_headers(api_key), "Accept": "application/json"})
-    with urllib.request.urlopen(request) as response:
+    with urllib.request.urlopen(request, context=https_context()) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -372,14 +379,14 @@ def post_json(url: str, api_key: str, payload: dict[str, Any]) -> dict[str, Any]
         },
         method="POST",
     )
-    with urllib.request.urlopen(request) as response:
+    with urllib.request.urlopen(request, context=https_context()) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
 def download_file(url: str, api_key: str, output_path: Path) -> None:
     request = urllib.request.Request(url, headers=auth_headers(api_key))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(request) as response, output_path.open("wb") as file:
+    with urllib.request.urlopen(request, context=https_context()) as response, output_path.open("wb") as file:
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
@@ -1379,13 +1386,18 @@ def command_convert_gpkg(args: argparse.Namespace) -> int:
     return 0
 
 
+def download_args_for_generate(args: argparse.Namespace, archive_path: Path) -> argparse.Namespace:
+    download_vars = vars(args).copy()
+    download_vars["output"] = str(archive_path)
+    return argparse.Namespace(**download_vars)
+
+
 def command_generate(args: argparse.Namespace) -> int:
     api_key = resolve_api_key(args)
     output = Path(args.output)
     work_dir = Path(args.work_dir)
     archive_path = work_dir / (output.stem + ".zip")
-    download_args = argparse.Namespace(**vars(args), output=str(archive_path))
-    command_download(download_args)
+    command_download(download_args_for_generate(args, archive_path))
     gpkg_path = extract_first_gpkg(archive_path, work_dir / output.stem)
     rules = load_table_rules(Path(args.mapping) if args.mapping else None)
     paper_bbox = parse_orienteering_bbox(args.bbox)

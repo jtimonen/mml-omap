@@ -2,6 +2,7 @@ import sqlite3
 import struct
 import tempfile
 import unittest
+import argparse
 import datetime as dt
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from mml_omap.cli import (
     RenderTransform,
     clip_geometry_to_frame,
     convert_gpkg_to_geojson,
+    download_args_for_generate,
     enclosing_grid_bbox,
     estimate_finland_magnetic_declination_deg,
     estimate_finland_total_correction_deg,
@@ -136,6 +138,15 @@ class EnvFileTest(unittest.TestCase):
 
             self.assertEqual(read_env_file_value("MML_API_KEY", env_path), "secret-value")
             self.assertIsNone(read_env_file_value("MISSING", env_path))
+
+
+class GenerateCommandTest(unittest.TestCase):
+    def test_download_args_for_generate_replaces_output(self) -> None:
+        args = argparse.Namespace(output="output.geojson", bbox="0,0,1,1", work_dir="builds")
+        download_args = download_args_for_generate(args, Path("builds/output.zip"))
+
+        self.assertEqual(download_args.output, "builds/output.zip")
+        self.assertEqual(download_args.bbox, "0,0,1,1")
 
 
 if __name__ == "__main__":

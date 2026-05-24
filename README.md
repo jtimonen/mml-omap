@@ -421,6 +421,19 @@ attribute-to-ISOM-code idea as Karttapullautin `vectorconf` files. Credit for
 that mapping-table pattern belongs to Karttapullautin; this project adapts the
 idea to MML GeoPackage tables and `kohdeluokka` values.
 
+The built-in renderer uses a local structured ISOM symbol library documented in
+[docs/isom-symbol-library.md](docs/isom-symbol-library.md). The definitions are
+maintained from the public IOF/O-Map Wiki specification, not copied from
+OpenOrienteering Mapper, OCAD, or another mapper's symbol-set assets. This keeps
+the GeoJSON-to-SVG/PNG/PDF pipeline usable inside this MIT-licensed project
+without taking a GPL/proprietary dependency on symbol artwork.
+
+Export the built-in symbol library as JSON:
+
+```sh
+uv run mml-omap symbols symbols.json
+```
+
 The default mapping is conservative. The names below describe the internal
 classification used to choose an ISOM symbol, but generated GeoJSON does not
 write these names into `properties.symbol`.

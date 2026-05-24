@@ -27,6 +27,15 @@ from typing import Any
 
 import certifi
 
+from .symbols import (
+    DEFAULT_STYLE,
+    IOF_NUMBER_TO_RENDER_SYMBOL,
+    SYMBOL_RENDER_ORDER,
+    SYMBOL_STYLES,
+    export_symbol_library,
+    iof_symbol_metadata as symbol_library_metadata,
+)
+
 
 MML_OGC_PROCESSES_URL = (
     "https://avoin-paikkatieto.maanmittauslaitos.fi/tiedostopalvelu/ogcproc/v1"
@@ -103,140 +112,8 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "taajaanrakennettualue": {"object_type": "area", "symbol": "private_yard"},
 }
 
-SYMBOL_STYLES = {
-    "contour": {"stroke": "#9b5a28", "stroke_width_mm": 0.14, "fill": "none"},
-    "index_contour": {"stroke": "#9b5a28", "stroke_width_mm": 0.25, "fill": "none"},
-    "form_line": {"stroke": "#9b5a28", "stroke_width_mm": 0.10, "fill": "none", "dasharray": "1.0 0.5"},
-    "depression_contour": {"stroke": "#9b5a28", "stroke_width_mm": 0.14, "fill": "none"},
-    "path": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none", "dasharray": "1.5 0.5"},
-    "small_path": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none", "dasharray": "0.75 0.5"},
-    "small_road": {"stroke": "#000000", "stroke_width_mm": 0.25, "fill": "none", "dasharray": "3.0 0.75"},
-    "road": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
-    "major_road": {
-        "stroke": "#000000",
-        "stroke_width_mm": 0.58,
-        "inner_stroke": "#b68a57",
-        "inner_stroke_width_mm": 0.30,
-        "fill": "none",
-    },
-    "railway": {"stroke": "#000000", "stroke_width_mm": 0.28, "fill": "none", "dasharray": "2.0 1.0"},
-    "stream": {"stroke": "#008fd5", "stroke_width_mm": 0.18, "fill": "none"},
-    "wide_stream": {"stroke": "#008fd5", "stroke_width_mm": 0.30, "fill": "none"},
-    "river": {"stroke": "#008fd5", "stroke_width_mm": 0.30, "fill": "none"},
-    "cliff": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none"},
-    "fence": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none"},
-    "lake": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#b9e3f7"},
-    "swamp": {
-        "stroke": "none",
-        "stroke_width_mm": 0.0,
-        "fill": "none",
-        "svg_fill_pattern": "marsh",
-        "pattern_stroke": "#008fd5",
-        "pattern_stroke_width_mm": 0.12,
-        "pattern_spacing_mm": 1.0,
-        "pattern_dasharray": "1.4 0.55",
-    },
-    "field": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#f2c84b"},
-    "cultivated_land": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#f2c84b", "svg_fill_pattern": "cultivated_land"},
-    "recreation_area": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "none"},
-    "private_yard": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#b7bf63"},
-    "thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#49a64a"},
-    "very_thick_forest": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#16702f"},
-    "open_rock": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#d9d9d9"},
-    "building": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#222222"},
-    "mapped_rock": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#000000", "point_radius_mm": 0.20},
-    "place_label": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#000000", "font_size_mm": 3.0},
-    "water_label": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "#008fd5", "font_size_mm": 3.0, "font_style": "italic"},
-}
-
-IOF_SYMBOLS = {
-    "contour": ("101", "Contour"),
-    "index_contour": ("102", "Index contour"),
-    "form_line": ("103", "Form line"),
-    "depression_contour": ("101", "Contour"),
-    "cliff": ("202", "Cliff"),
-    "open_rock": ("214", "Bare rock"),
-    "mapped_rock": ("204", "Boulder"),
-    "lake": ("301", "Uncrossable body of water"),
-    "river": ("301", "Uncrossable body of water"),
-    "wide_stream": ("304", "Crossable watercourse"),
-    "stream": ("305", "Small crossable watercourse"),
-    "swamp": ("308", "Marsh"),
-    "field": ("401", "Open land"),
-    "thick_forest": ("406", "Vegetation: slow running"),
-    "very_thick_forest": ("410", "Vegetation: fight"),
-    "cultivated_land": ("412", "Cultivated land"),
-    "private_yard": ("520", "Area that shall not be entered"),
-    "major_road": ("502", "Wide road"),
-    "road": ("503", "Road"),
-    "small_road": ("504", "Vehicle track"),
-    "path": ("505", "Footpath"),
-    "small_path": ("506", "Small footpath"),
-    "railway": ("509", "Railway"),
-    "fence": ("516", "Fence"),
-    "building": ("521", "Building"),
-}
-
-IOF_NUMBER_TO_RENDER_SYMBOL = {
-    "101": "contour",
-    "102": "index_contour",
-    "103": "form_line",
-    "202": "cliff",
-    "204": "mapped_rock",
-    "214": "open_rock",
-    "301": "lake",
-    "304": "wide_stream",
-    "305": "stream",
-    "308": "swamp",
-    "401": "field",
-    "406": "thick_forest",
-    "410": "very_thick_forest",
-    "412": "cultivated_land",
-    "502": "major_road",
-    "503": "road",
-    "504": "small_road",
-    "505": "path",
-    "506": "small_path",
-    "509": "railway",
-    "516": "fence",
-    "520": "private_yard",
-    "521": "building",
-}
-
-DEFAULT_STYLE = {"stroke": "#444444", "stroke_width_mm": 0.18, "fill": "none"}
 DEFAULT_NORTH_LINE_SPACING_M = 300.0
 DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 20.0
-
-SYMBOL_RENDER_ORDER = {
-    "field": 100,
-    "cultivated_land": 102,
-    "recreation_area": 105,
-    "private_yard": 108,
-    "thick_forest": 110,
-    "very_thick_forest": 120,
-    "open_rock": 130,
-    "lake": 140,
-    "swamp": 150,
-    "river": 160,
-    "contour": 300,
-    "index_contour": 310,
-    "form_line": 320,
-    "depression_contour": 330,
-    "stream": 360,
-    "wide_stream": 365,
-    "major_road": 400,
-    "road": 405,
-    "small_road": 410,
-    "railway": 415,
-    "path": 420,
-    "small_path": 425,
-    "fence": 430,
-    "cliff": 440,
-    "building": 500,
-    "mapped_rock": 600,
-    "place_label": 700,
-    "water_label": 700,
-}
 
 
 def read_json(path: Path) -> Any:
@@ -747,15 +624,7 @@ def classify_feature(
 
 
 def iof_symbol_metadata(symbol: str | None) -> dict[str, Any]:
-    if not symbol:
-        return {"iof_symbol_number": None, "iof_symbol_name": None}
-    if symbol in IOF_NUMBER_TO_RENDER_SYMBOL:
-        symbol = IOF_NUMBER_TO_RENDER_SYMBOL[symbol]
-    mapped = IOF_SYMBOLS.get(symbol)
-    if mapped:
-        number, name = mapped
-        return {"iof_symbol_number": number, "iof_symbol_name": name}
-    return {"iof_symbol_number": None, "iof_symbol_name": "No ISOM feature symbol assigned"}
+    return symbol_library_metadata(symbol)
 
 
 def object_type_from_geojson(geometry_type: str) -> str:
@@ -2551,6 +2420,16 @@ def command_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_symbols(args: argparse.Namespace) -> int:
+    symbol_library = export_symbol_library()
+    if args.output:
+        write_json(Path(args.output), symbol_library)
+    else:
+        json.dump(symbol_library, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create and render GeoJSON from Maanmittauslaitos open data.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2649,6 +2528,10 @@ def build_parser() -> argparse.ArgumentParser:
     render_pdf_parser = subparsers.add_parser("render-pdf", parents=[common_render], help="Render GeoJSON to PDF.")
     render_pdf_parser.add_argument("--symbol-numbers", action="store_true", help="Print IOF/ISOM symbol numbers over rendered features.")
     render_pdf_parser.set_defaults(func=command_render_pdf)
+
+    symbols = subparsers.add_parser("symbols", help="Write the built-in structured ISOM symbol library as JSON.")
+    symbols.add_argument("output", nargs="?", help="Optional JSON output path. Defaults to stdout.")
+    symbols.set_defaults(func=command_symbols)
 
     return parser
 

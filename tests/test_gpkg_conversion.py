@@ -7,6 +7,7 @@ import datetime as dt
 from pathlib import Path
 
 import mml_omap.cli as cli
+from mml_omap.symbols import export_symbol_library
 from mml_omap.cli import (
     DEFAULT_TABLE_RULES,
     OrientedFrame,
@@ -28,6 +29,7 @@ from mml_omap.cli import (
     render_output_base,
     render_pdf,
     render_svg,
+    command_symbols,
     validate_orienteering_bbox_size,
 )
 
@@ -215,6 +217,15 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertEqual(iof_symbol_metadata("swamp")["iof_symbol_number"], "308")
         self.assertEqual(iof_symbol_metadata("major_road")["iof_symbol_number"], "502")
         self.assertIsNone(iof_symbol_metadata("place_label")["iof_symbol_number"])
+
+    def test_symbol_library_exports_structured_local_definitions(self) -> None:
+        library = export_symbol_library()
+
+        self.assertEqual(library["source"]["standard"], "ISOM 2017-2 Revision 6")
+        self.assertIn("Do not import GPL/proprietary", library["source"]["asset_policy"])
+        self.assertEqual(library["symbols"]["major_road"]["iof_symbol_number"], "502")
+        self.assertEqual(library["symbols"]["major_road"]["geometry"], "line")
+        self.assertEqual(library["symbols"]["major_road"]["style"]["inner_stroke"], "#b68a57")
 
     def test_svg_render_uses_iof_like_water_marsh_field_and_road_symbols(self) -> None:
         geojson = {
@@ -408,8 +419,18 @@ class GenerateCommandTest(unittest.TestCase):
         args = argparse.Namespace(output="output.geojson", bbox="0,0,1,1", work_dir="builds")
         download_args = download_args_for_generate(args, Path("builds/output.zip"))
 
-        self.assertEqual(download_args.output, "builds/output.zip")
+        self.assertEqual(Path(download_args.output), Path("builds/output.zip"))
         self.assertEqual(download_args.bbox, "0,0,1,1")
+
+    def test_symbols_command_writes_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "symbols.json"
+
+            exit_code = command_symbols(argparse.Namespace(output=str(output)))
+
+            self.assertEqual(exit_code, 0)
+            data = cli.read_json(output)
+            self.assertEqual(data["symbols"]["lake"]["iof_symbol_number"], "301")
 
 
 if __name__ == "__main__":

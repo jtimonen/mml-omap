@@ -19,7 +19,6 @@ builds/
 *.gpkg
 *.geojson
 *.zip
-*.pdf
 *.png
 *.svg
 !docs/

@@ -21,9 +21,9 @@ resolving MML laser scanning map sheets with `tm35fin`. The 3 km sheet size is
 part of MML's LAZ distribution grid, not a contour scale or cartographic
 generalization setting.
 
-It downloads LAZ data for the covering sheets, builds terrain candidates from
-that expanded context, and clips final GeoJSON back to the requested paper
-frame.
+It downloads every LAZ/ZIP result returned for the covering sheets, builds
+terrain candidates from that expanded context, and clips final GeoJSON back to
+the requested paper frame.
 
 Each render writes a `*-terrain-report.json` file next to the map outputs. The
 report includes the contour interval, downloaded laser sheets, point-cloud grid
@@ -96,10 +96,14 @@ Vegetation uses the same LAS/LAZ point rows. Points are bucketed into square
 cells. Ground height is estimated from classified ground points where available,
 otherwise from local minima.
 
-Non-ground points at least `--min-height-m` above that ground are counted per
-cell. Cells with at least `--slow-count` points become ISOM `406`; cells with
-at least `--fight-count` points become ISOM `410`. Adjacent cells of the same
-class are dissolved into polygons with Shapely before rendering.
+The classifier follows the same basic threshold shape as Karttapullautin:
+count green hits in a low vegetation band and compare them to near-ground hits
+with fixed global ratio thresholds. The default near-ground limit is 0.8 m, the
+default green-hit band is 0.8-5.0 m, and the default ratio thresholds are 0.68
+for ISOM `406` and 1.13 for ISOM `410`. Minimum hit counts are also required to
+avoid isolated-noise cells. Tall canopy returns do not by themselves create
+green areas. Adjacent cells of the same class are dissolved into polygons with
+Shapely before rendering.
 
 ## Known Gaps
 

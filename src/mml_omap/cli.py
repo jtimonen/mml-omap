@@ -19,6 +19,7 @@ import struct
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 import zlib
@@ -116,6 +117,12 @@ DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 20.0
 DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
 MML_LASER_MAP_SHEET_GRID_M = 3000.0
 DEFAULT_MML_JOB_ATTEMPTS = 3
+DEFAULT_GREEN_GROUND_HEIGHT_M = 0.8
+DEFAULT_GREEN_MAX_HEIGHT_M = 5.0
+DEFAULT_GREEN_SLOW_RATIO = 0.68
+DEFAULT_GREEN_FIGHT_RATIO = 1.13
+DEFAULT_GREEN_MIN_HITS = 8
+DEFAULT_GREEN_FIGHT_MIN_HITS = 24
 
 
 def read_json(path: Path) -> Any:
@@ -581,16 +588,39 @@ def pick_download_url(results: dict[str, Any]) -> str:
     raise RuntimeError(f"MML results did not include a downloadable GeoPackage or zip: {results}")
 
 
-def pick_download_url_by_suffix(results: dict[str, Any], suffixes: tuple[str, ...]) -> str:
+def download_urls_by_suffix(results: dict[str, Any], suffixes: tuple[str, ...]) -> list[str]:
     lowered_suffixes = tuple(suffix.lower() for suffix in suffixes)
-    for result in results.get("results", []):
-        path = str(result.get("path", ""))
-        if path.lower().endswith(lowered_suffixes):
-            return path
-    for result in results.get("results", []):
-        if result.get("zipPath"):
-            return str(result["zipPath"])
-    raise RuntimeError(f"MML results did not include a downloadable file ending in {suffixes}: {results}")
+    urls = [
+        str(result.get("path", ""))
+        for result in results.get("results", [])
+        if url_path_has_suffix(str(result.get("path", "")), lowered_suffixes)
+    ]
+    if not urls:
+        urls = [
+            str(result["zipPath"])
+            for result in results.get("results", [])
+            if result.get("zipPath")
+        ]
+    deduplicated = list(dict.fromkeys(url for url in urls if url))
+    if not deduplicated:
+        raise RuntimeError(f"MML results did not include downloadable files ending in {suffixes}: {results}")
+    return deduplicated
+
+
+def url_path_has_suffix(url: str, suffixes: tuple[str, ...]) -> bool:
+    return urllib.parse.urlparse(url).path.lower().endswith(suffixes)
+
+
+def download_path_for_url(url: str, output_path: Path, index: int, total: int) -> Path:
+    if total == 1:
+        return output_path
+    parsed = urllib.parse.urlparse(url)
+    name = Path(urllib.parse.unquote(parsed.path)).name
+    suffix = Path(name).suffix or output_path.suffix
+    stem = Path(name).stem if name else f"{output_path.stem}-{index}"
+    if not stem:
+        stem = f"{output_path.stem}-{index}"
+    return output_path.with_name(f"{output_path.stem}-{index:02d}-{stem}{suffix}")
 
 
 def extract_first_gpkg(archive_path: Path, output_dir: Path) -> Path:
@@ -1775,25 +1805,33 @@ def lidar_vegetation_features(
     min_x = min(row[0] for row in rows)
     min_y = min(row[1] for row in rows)
     ground: dict[tuple[int, int], float] = {}
-    vegetation_counts: dict[tuple[int, int], int] = {}
+    green_hit_counts: dict[tuple[int, int], int] = {}
+    near_ground_hit_counts: dict[tuple[int, int], int] = {}
+    green_min_height_m = min_height_m
+    green_max_height_m = max(DEFAULT_GREEN_MAX_HEIGHT_M, green_min_height_m)
     for x, y, z, classification in rows:
         cell = (math.floor((x - min_x) / cell_size_m), math.floor((y - min_y) / cell_size_m))
         if classification == 2 or cell not in ground or z < ground[cell]:
             ground[cell] = z
-    for x, y, z, classification in rows:
-        if classification == 2:
-            continue
+    for x, y, z, _classification in rows:
         cell = (math.floor((x - min_x) / cell_size_m), math.floor((y - min_y) / cell_size_m))
         ground_z = ground.get(cell)
         if ground_z is None:
             continue
-        if z - ground_z >= min_height_m:
-            vegetation_counts[cell] = vegetation_counts.get(cell, 0) + 1
+        height_above_ground = z - ground_z
+        if 0.0 <= height_above_ground <= DEFAULT_GREEN_GROUND_HEIGHT_M:
+            near_ground_hit_counts[cell] = near_ground_hit_counts.get(cell, 0) + 1
+        if green_min_height_m <= height_above_ground <= green_max_height_m:
+            green_hit_counts[cell] = green_hit_counts.get(cell, 0) + 1
     cells_by_symbol: dict[str, list[tuple[float, float, float, float, int]]] = {"406": [], "410": []}
-    for (cell_x, cell_y), count in vegetation_counts.items():
-        if count < slow_count:
+    for (cell_x, cell_y), count in green_hit_counts.items():
+        near_ground_count = near_ground_hit_counts.get((cell_x, cell_y), 0)
+        if near_ground_count <= 0 or count < slow_count:
             continue
-        symbol = "410" if count >= fight_count else "406"
+        green_ratio = count / near_ground_count
+        if green_ratio < DEFAULT_GREEN_SLOW_RATIO:
+            continue
+        symbol = "410" if count >= fight_count and green_ratio >= DEFAULT_GREEN_FIGHT_RATIO else "406"
         x0 = min_x + cell_x * cell_size_m
         y0 = min_y + cell_y * cell_size_m
         x1 = x0 + cell_size_m
@@ -1817,6 +1855,13 @@ def lidar_vegetation_features(
                         "iof_symbol_number": symbol,
                         "iof_symbol_name": name,
                         "cell_size_m": cell_size_m,
+                        "green_min_height_m": green_min_height_m,
+                        "green_max_height_m": green_max_height_m,
+                        "green_ground_height_m": DEFAULT_GREEN_GROUND_HEIGHT_M,
+                        "green_slow_ratio": DEFAULT_GREEN_SLOW_RATIO,
+                        "green_fight_ratio": DEFAULT_GREEN_FIGHT_RATIO,
+                        "green_min_hit_count": slow_count,
+                        "green_fight_min_hit_count": fight_count,
                     },
                     "geometry": geometry,
                 }
@@ -3236,7 +3281,7 @@ def command_download(args: argparse.Namespace) -> int:
     return 0
 
 
-def download_map_sheet_process_file(
+def download_map_sheet_process_files(
     *,
     api_key: str,
     map_sheets: list[str],
@@ -3248,7 +3293,7 @@ def download_map_sheet_process_file(
     timeout_seconds: float,
     suffixes: tuple[str, ...],
     extra_inputs: dict[str, Any] | None = None,
-) -> Path:
+) -> list[Path]:
     results = mml_job_results_with_retries(
         submit_job=lambda: submit_map_sheet_process_job(
             api_key=api_key,
@@ -3263,9 +3308,14 @@ def download_map_sheet_process_file(
         timeout_seconds=timeout_seconds,
         description=process_id,
     )
-    download_url = pick_download_url_by_suffix(results, suffixes)
-    download_file(download_url, api_key, output_path)
-    return output_path
+    download_urls = download_urls_by_suffix(results, suffixes)
+    paths: list[Path] = []
+    for index, download_url in enumerate(download_urls, start=1):
+        path = download_path_for_url(download_url, output_path, index, len(download_urls))
+        progress(f"Downloading MML laser result {index}/{len(download_urls)}...")
+        download_file(download_url, api_key, path)
+        paths.append(path)
+    return paths
 
 
 def command_convert_gpkg(args: argparse.Namespace) -> int:
@@ -3369,13 +3419,13 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
     terrain_bbox = expand_bbox(enclosing_grid_bbox(bbox, magnetic_declination_deg), args.terrain_context_margin_m)
     laser_sheets = tm35_map_sheets_for_bbox(terrain_bbox)
     progress(f"Downloading MML laser scanning sheets: {', '.join(laser_sheets)}")
-    laser_archive_path = work_dir / "mml" / f"{output_base.stem}-laser.zip"
-    download_map_sheet_process_file(
+    laser_download_path = work_dir / "mml" / f"{output_base.stem}-laser.zip"
+    laser_download_paths = download_map_sheet_process_files(
         api_key=api_key,
         map_sheets=laser_sheets,
         process_id="laserkeilausaineisto_05_karttalehti",
         file_format="LAZ",
-        output_path=laser_archive_path,
+        output_path=laser_download_path,
         base_url=args.base_url,
         poll_seconds=args.poll_seconds,
         timeout_seconds=args.timeout_seconds,
@@ -3383,7 +3433,10 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
         extra_inputs={"dataSetInput": "Uusin"},
     )
     laser_dir = work_dir / "mml" / f"{output_base.stem}-laser"
-    laser_paths = extract_laser_paths(laser_archive_path, laser_dir)
+    laser_paths: list[Path] = []
+    for index, laser_download_path in enumerate(laser_download_paths, start=1):
+        laser_paths.extend(extract_laser_paths(laser_download_path, laser_dir / f"result-{index:02d}"))
+    progress(f"Using {len(laser_paths)} LAZ/LAS point files for {len(laser_sheets)} requested sheets.")
     vector_rules = table_rules_with_optional_forest_mask(
         load_table_rules(Path(args.mapping) if args.mapping else None),
         include_forest_mask=False,
@@ -3599,9 +3652,9 @@ def command_ekp(args: argparse.Namespace) -> int:
         slope_threshold_deg=38.0,
         min_cliff_length_m=8.0,
         cell_size_m=4.0,
-        min_height_m=1.8,
-        slow_count=4,
-        fight_count=12,
+        min_height_m=DEFAULT_GREEN_GROUND_HEIGHT_M,
+        slow_count=DEFAULT_GREEN_MIN_HITS,
+        fight_count=DEFAULT_GREEN_FIGHT_MIN_HITS,
         north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
         contour_merge_tolerance_m=DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
         magnetic_declination_deg="auto",
@@ -3959,9 +4012,9 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--slope-threshold-deg", type=float, default=38.0)
     build.add_argument("--min-cliff-length-m", type=float, default=8.0)
     build.add_argument("--cell-size-m", type=float, default=4.0)
-    build.add_argument("--min-height-m", type=float, default=1.8)
-    build.add_argument("--slow-count", type=int, default=4)
-    build.add_argument("--fight-count", type=int, default=12)
+    build.add_argument("--min-height-m", type=float, default=DEFAULT_GREEN_GROUND_HEIGHT_M)
+    build.add_argument("--slow-count", type=int, default=DEFAULT_GREEN_MIN_HITS)
+    build.add_argument("--fight-count", type=int, default=DEFAULT_GREEN_FIGHT_MIN_HITS)
     build.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
     build.add_argument("--contour-merge-tolerance-m", type=float, default=DEFAULT_CONTOUR_MERGE_TOLERANCE_M)
     build.add_argument(

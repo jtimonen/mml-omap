@@ -15,6 +15,7 @@ from mml_omap.cli import (
     clip_geometry_to_frame,
     convert_gpkg_to_geojson,
     download_args_for_generate,
+    download_urls_by_suffix,
     enclosing_grid_bbox,
     estimate_finland_magnetic_declination_deg,
     estimate_finland_total_correction_deg,
@@ -516,6 +517,21 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertEqual(features[0]["properties"]["symbol"], "406")
         self.assertEqual(features[0]["geometry"]["type"], "Polygon")
 
+    def test_lidar_vegetation_uses_fixed_green_hit_ratio_threshold(self) -> None:
+        rows = [(0.0, 0.0, 0.0, 2)]
+        rows.extend((1.0, 1.0, 18.0 + index, 5) for index in range(20))
+        rows.extend((1.0, 1.0, 2.5, 5) for _index in range(2))
+
+        features = lidar_vegetation_features(
+            rows,
+            cell_size_m=10.0,
+            min_height_m=1.8,
+            slow_count=3,
+            fight_count=10,
+        )
+
+        self.assertEqual(features, [])
+
     def test_ground_grid_reports_noise_estimates(self) -> None:
         rows = [
             (0.0, 0.0, 10.0, 2),
@@ -562,6 +578,19 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertEqual(len(paths), 1)
         self.assertEqual(paths[0].suffix, ".laz")
+
+    def test_download_urls_by_suffix_returns_all_matching_sheet_results(self) -> None:
+        urls = download_urls_by_suffix(
+            {
+                "results": [
+                    {"path": "https://example.test/L4131F3.laz?token=abc"},
+                    {"path": "https://example.test/L4131F4.laz"},
+                ]
+            },
+            (".laz", ".zip"),
+        )
+
+        self.assertEqual(urls, ["https://example.test/L4131F3.laz?token=abc", "https://example.test/L4131F4.laz"])
 
     def test_contours_from_xyz_command_writes_geojson(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

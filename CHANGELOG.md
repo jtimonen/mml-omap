@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4
+
+- Added the generated Espoon keskuspuisto PNG as the README demo image.
+- PNG map outputs now draw the same title, frame, north marker, and footer
+  metadata as PDF/SVG outputs, including paper size, scale, software version,
+  contour interval, magnetic declination, and CRS.
+- LiDAR point diagnostic PNGs now use the same standard paper size and map
+  scale as the actual rendered map, while retaining the version footer and
+  viridis height color scale.
+
 ## 0.1.3
 
 - Built-in examples render at 1:10000.

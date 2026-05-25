@@ -2317,6 +2317,44 @@ def map_footer_text(transform: RenderTransform, map_maker: str, contour_interval
     )
 
 
+def lidar_footer_text(transform: RenderTransform, map_maker: str) -> str:
+    return (
+        f"{transform.paper_size} | Scale 1:{transform.scale} | {map_maker} | "
+        f"mml-omap {__version__} | LiDAR point heights | "
+        f"KOK {transform.magnetic_declination_deg:.2f} deg | EPSG:3067"
+    )
+
+
+def draw_pillow_text_fit(draw: Any, xy: tuple[float, float], text: str, *, fill: Any, font: Any, max_width_px: int) -> None:
+    if max_width_px <= 0:
+        return
+    output = text
+    try:
+        if draw.textbbox(xy, output, font=font)[2] - draw.textbbox(xy, output, font=font)[0] > max_width_px:
+            candidate = text
+            while len(candidate) > 1:
+                candidate = candidate[:-1].rstrip()
+                output = candidate + "..."
+                if draw.textbbox(xy, output, font=font)[2] - draw.textbbox(xy, output, font=font)[0] <= max_width_px:
+                    break
+    except Exception:
+        pass
+    draw.text(xy, output, fill=fill, font=font)
+
+
+def pillow_layout_font(size_px: int) -> Any:
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    for name in ("arial.ttf", "Arial.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(name, size_px)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
 def north_line_x_positions(transform: RenderTransform, spacing_m: float) -> list[float]:
     if spacing_m <= 0:
         return []
@@ -2748,30 +2786,25 @@ def render_lidar_height_png(
     rows: list[tuple[float, float, float, int | None]],
     output_path: Path,
     *,
-    bbox: list[float],
-    pixels_per_m: float = 1.0,
-    max_side_px: int = 4096,
+    transform: RenderTransform,
+    dpi: int,
+    map_title_text: str | None = None,
+    map_maker: str = "mml-omap",
 ) -> dict[str, Any]:
     try:
         import numpy as np
     except ImportError as exc:
         raise RuntimeError("LiDAR point height PNG rendering requires numpy") from exc
 
-    min_x, min_y, max_x, max_y = bbox
-    width_m = max_x - min_x
-    height_m = max_y - min_y
-    if width_m <= 0 or height_m <= 0:
-        raise ValueError("LiDAR diagnostic bbox must have positive width and height")
-    scale = min(pixels_per_m, max_side_px / width_m, max_side_px / height_m)
-    scale = max(scale, 1e-6)
-    plot_width = max(1, int(math.ceil(width_m * scale)) + 1)
-    plot_height = max(1, int(math.ceil(height_m * scale)) + 1)
-    margin_left = 72
-    margin_right = 112
-    margin_top = 52
-    margin_bottom = 72
-    width = plot_width + margin_left + margin_right
-    height = plot_height + margin_top + margin_bottom
+    px_per_mm = dpi / 25.4
+    width = max(1, int(round(transform.page_width_mm * px_per_mm)))
+    height = max(1, int(round(transform.page_height_mm * px_per_mm)))
+    plot_left = int(round(transform.map_left_mm * px_per_mm))
+    plot_top = int(round(transform.map_top_mm * px_per_mm))
+    plot_width = max(1, int(round(transform.map_width_mm * px_per_mm)))
+    plot_height = max(1, int(round(transform.map_height_mm * px_per_mm)))
+    plot_right = plot_left + plot_width
+    plot_bottom = plot_top + plot_height
     image = np.full((height, width, 4), 255, dtype=np.uint8)
 
     raw = np.asarray(rows, dtype=float)
@@ -2781,14 +2814,18 @@ def render_lidar_height_png(
         np.isfinite(raw[:, 0])
         & np.isfinite(raw[:, 1])
         & np.isfinite(raw[:, 2])
-        & (raw[:, 0] >= min_x)
-        & (raw[:, 0] <= max_x)
-        & (raw[:, 1] >= min_y)
-        & (raw[:, 1] <= max_y)
     )
-    points = raw[mask]
-    if len(points):
-        z = points[:, 2]
+    finite_points = raw[mask]
+    points: list[tuple[float, float, float]] = []
+    for x_raw, y_raw, z_raw, *_rest in finite_points:
+        x_mm, y_mm = transform.to_mm([x_raw, y_raw])
+        x_px = int(round(x_mm * px_per_mm))
+        y_px = int(round(y_mm * px_per_mm))
+        if plot_left <= x_px <= plot_right and plot_top <= y_px <= plot_bottom:
+            points.append((float(x_px), float(y_px), float(z_raw)))
+    point_array = np.asarray(points, dtype=float)
+    if len(point_array):
+        z = point_array[:, 2]
         z_min = float(np.quantile(z, 0.01))
         z_max = float(np.quantile(z, 0.99))
         if z_max <= z_min:
@@ -2798,18 +2835,18 @@ def render_lidar_height_png(
             z_max = z_min + 1.0
         normalized = (z - z_min) / (z_max - z_min)
         colors = viridis_rgb_array(normalized)
-        x = margin_left + np.clip(np.rint((points[:, 0] - min_x) * scale).astype(int), 0, plot_width - 1)
-        y = margin_top + np.clip(np.rint((max_y - points[:, 1]) * scale).astype(int), 0, plot_height - 1)
+        x = np.clip(np.rint(point_array[:, 0]).astype(int), 0, width - 1)
+        y = np.clip(np.rint(point_array[:, 1]).astype(int), 0, height - 1)
         image[y, x, 0:3] = colors
         image[y, x, 3] = 255
     else:
         z_min = 0.0
         z_max = 0.0
 
-    image[margin_top, margin_left:margin_left + plot_width, 0:3] = 0
-    image[margin_top + plot_height - 1, margin_left:margin_left + plot_width, 0:3] = 0
-    image[margin_top:margin_top + plot_height, margin_left, 0:3] = 0
-    image[margin_top:margin_top + plot_height, margin_left + plot_width - 1, 0:3] = 0
+    image[plot_top, plot_left:plot_right, 0:3] = 0
+    image[plot_bottom - 1, plot_left:plot_right, 0:3] = 0
+    image[plot_top:plot_bottom, plot_left, 0:3] = 0
+    image[plot_top:plot_bottom, plot_right - 1, 0:3] = 0
 
     try:
         from PIL import Image, ImageDraw
@@ -2819,37 +2856,49 @@ def render_lidar_height_png(
     else:
         pil_image = Image.fromarray(image, mode="RGBA")
         draw = ImageDraw.Draw(pil_image)
-        title = "LiDAR point heights"
-        footer = f"mml-omap {__version__} | EPSG:3067 | {int(len(points))} points"
-        draw.text((margin_left, 14), title, fill=(0, 0, 0, 255))
-        draw.text((margin_left, height - 34), footer, fill=(0, 0, 0, 255))
-        draw.text((margin_left, height - 18), f"Height colors: {z_min:.1f} m to {z_max:.1f} m (1st-99th percentile, clamped)", fill=(0, 0, 0, 255))
-        bar_x0 = margin_left + plot_width + 28
-        bar_y0 = margin_top
-        bar_height = plot_height
-        bar_width = 18
+        title_font = pillow_layout_font(max(12, int(round(3.2 * px_per_mm))))
+        footer_font = pillow_layout_font(max(10, int(round(2.6 * px_per_mm))))
+        title = f"{map_title(output_path, map_title_text)} LiDAR point heights"
+        footer = lidar_footer_text(transform, map_maker)
+        legend = f"Height colors: {z_min:.1f} m to {z_max:.1f} m (1st-99th percentile, clamped) | {int(len(point_array))} points"
+        text_x = max(2, plot_left)
+        draw_pillow_text_fit(draw, (text_x, max(2, plot_top - int(round(4.0 * px_per_mm)))), title, fill=(0, 0, 0, 255), font=title_font, max_width_px=width - text_x - 2)
+        draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(5.0 * px_per_mm)))), footer, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
+        draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(2.8 * px_per_mm)))), legend, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
+        available_right = width - plot_right
+        bar_width = max(8, int(round(2.5 * px_per_mm)))
+        bar_height = min(plot_height, max(24, int(round(35.0 * px_per_mm))))
+        if available_right >= bar_width + int(round(7.0 * px_per_mm)):
+            bar_x0 = plot_right + int(round(2.5 * px_per_mm))
+            bar_y0 = plot_top
+            label_x = bar_x0 + bar_width + int(round(1.4 * px_per_mm))
+        else:
+            bar_x0 = min(width - bar_width - 2, max(2, plot_right - bar_width - int(round(2.0 * px_per_mm))))
+            bar_y0 = plot_top + int(round(2.0 * px_per_mm))
+            label_x = max(2, bar_x0 - int(round(12.0 * px_per_mm)))
         for offset in range(bar_height):
             value = 1.0 - offset / max(bar_height - 1, 1)
             color = tuple(int(channel) for channel in viridis_rgb_array(np.asarray([value], dtype=float))[0])
             draw.line([(bar_x0, bar_y0 + offset), (bar_x0 + bar_width, bar_y0 + offset)], fill=(*color, 255))
         draw.rectangle((bar_x0, bar_y0, bar_x0 + bar_width, bar_y0 + bar_height - 1), outline=(0, 0, 0, 255))
-        draw.text((bar_x0 + bar_width + 6, bar_y0), f"{z_max:.1f} m", fill=(0, 0, 0, 255))
-        draw.text((bar_x0 + bar_width + 6, bar_y0 + bar_height - 12), f"{z_min:.1f} m", fill=(0, 0, 0, 255))
+        draw.text((label_x, bar_y0), f"{z_max:.1f} m", fill=(0, 0, 0, 255), font=footer_font)
+        draw.text((label_x, bar_y0 + bar_height - max(10, int(round(2.6 * px_per_mm)))), f"{z_min:.1f} m", fill=(0, 0, 0, 255), font=footer_font)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         pil_image.save(output_path)
     report = {
         "path": str(output_path),
-        "bbox": bbox,
+        "bbox": [transform.min_x, transform.min_y, transform.max_x, transform.max_y],
+        "paper_size": transform.paper_size,
+        "scale": transform.scale,
         "width_px": width,
         "height_px": height,
         "plot_width_px": plot_width,
         "plot_height_px": plot_height,
-        "margin_left_px": margin_left,
-        "margin_right_px": margin_right,
-        "margin_top_px": margin_top,
-        "margin_bottom_px": margin_bottom,
-        "pixels_per_m": scale,
-        "point_count": int(len(points)),
+        "plot_left_px": plot_left,
+        "plot_top_px": plot_top,
+        "dpi": dpi,
+        "pixels_per_m": 1000.0 * px_per_mm / transform.scale,
+        "point_count": int(len(point_array)),
         "height_color_ramp": "viridis",
         "height_color_min_m": z_min,
         "height_color_max_m": z_max,
@@ -2859,7 +2908,7 @@ def render_lidar_height_png(
     }
     progress(
         "Wrote LiDAR point height PNG "
-        f"to {output_path} with {len(points)} points colored by height."
+        f"to {output_path} with {len(point_array)} points colored by height."
     )
     return report
 
@@ -2871,6 +2920,9 @@ def render_png_with_pillow(
     transform: RenderTransform,
     dpi: int,
     include_layout: bool,
+    map_title_text: str | None,
+    map_maker: str,
+    contour_interval_m: float,
     north_line_spacing_m: float,
     contour_merge_tolerance_m: float,
 ) -> bool:
@@ -2966,6 +3018,33 @@ def render_png_with_pillow(
             y0 = transform.map_top_mm * px_per_mm
             y1 = (transform.map_top_mm + transform.map_height_mm) * px_per_mm
             draw.line([(x, y0), (x, y1)], fill=purple, width=line_width)
+        frame_x0 = transform.map_left_mm * px_per_mm
+        frame_y0 = transform.map_top_mm * px_per_mm
+        frame_x1 = (transform.map_left_mm + transform.map_width_mm) * px_per_mm
+        frame_y1 = (transform.map_top_mm + transform.map_height_mm) * px_per_mm
+        draw.rectangle((frame_x0, frame_y0, frame_x1, frame_y1), outline=(0, 0, 0), width=max(1, int(round(0.12 * px_per_mm))))
+        title_font = pillow_layout_font(max(12, int(round(3.2 * px_per_mm))))
+        footer_font = pillow_layout_font(max(10, int(round(2.6 * px_per_mm))))
+        text_x = max(2, int(round(transform.map_left_mm * px_per_mm)))
+        draw_pillow_text_fit(
+            draw,
+            (text_x, max(2, int(round((transform.map_top_mm - 4.4) * px_per_mm)))),
+            map_title(output_path, map_title_text),
+            fill=(0, 0, 0),
+            font=title_font,
+            max_width_px=width - text_x - 2,
+        )
+        draw_pillow_text_fit(
+            draw,
+            (text_x, max(2, height - int(round(4.2 * px_per_mm)))),
+            map_footer_text(transform, map_maker, contour_interval_m),
+            fill=(0, 0, 0),
+            font=footer_font,
+            max_width_px=width - text_x - 2,
+        )
+        north_x = (transform.map_left_mm + transform.map_width_mm - 4.0) * px_per_mm
+        north_y = max(2, int(round((transform.map_top_mm - 4.0) * px_per_mm)))
+        draw.text((north_x, north_y), "N", fill=(0, 0, 0), font=title_font, anchor="mm")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)
     progress(f"Wrote PNG to {output_path}.")
@@ -2979,6 +3058,9 @@ def render_png(
     transform: RenderTransform,
     dpi: int,
     include_layout: bool = True,
+    map_title_text: str | None = None,
+    map_maker: str = "mml-omap",
+    contour_interval_m: float = 5.0,
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
     contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
@@ -2988,6 +3070,9 @@ def render_png(
         transform=transform,
         dpi=dpi,
         include_layout=include_layout,
+        map_title_text=map_title_text,
+        map_maker=map_maker,
+        contour_interval_m=contour_interval_m,
         north_line_spacing_m=north_line_spacing_m,
         contour_merge_tolerance_m=contour_merge_tolerance_m,
     ):
@@ -3717,20 +3802,32 @@ def build_combined_map(args: argparse.Namespace) -> tuple[dict[str, Any], dict[s
 def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
     source_data = build_source_data(args)
-    ensure_lidar_point_report(source_data, output_base)
+    ensure_lidar_point_report(source_data, output_base, args)
     combined, report = combined_map_from_source_data(source_data, args, interval_m=args.interval_m)
     render_build_outputs(output_base, combined, report, args, source_data=source_data)
     return 0
 
 
-def ensure_lidar_point_report(source_data: dict[str, Any], output_base: Path) -> dict[str, Any]:
+def lidar_diagnostic_transform(source_data: dict[str, Any], args: argparse.Namespace) -> RenderTransform:
+    return RenderTransform(
+        source_data["bbox"],
+        args.scale,
+        args.margin_mm,
+        magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
+    )
+
+
+def ensure_lidar_point_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
     existing = source_data.get("lidar_point_height_png")
     if isinstance(existing, dict):
         return existing
     report = render_lidar_height_png(
         source_data["lidar_rows"],
         output_base.with_name(output_base.name + "-lidar-points").with_suffix(".png"),
-        bbox=source_data["terrain_bbox"],
+        transform=lidar_diagnostic_transform(source_data, args),
+        dpi=args.dpi,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
     )
     source_data["lidar_point_height_png"] = report
     return report
@@ -3746,7 +3843,11 @@ def render_build_outputs(
 ) -> None:
     geojson_path = output_base.with_suffix(".geojson")
     write_json(geojson_path, combined)
-    report["lidar_point_height_png"] = ensure_lidar_point_report(source_data, render_output_base(source_data["diagnostic_output"]))
+    report["lidar_point_height_png"] = ensure_lidar_point_report(
+        source_data,
+        render_output_base(source_data["diagnostic_output"]),
+        args,
+    )
     write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
     transform = make_render_transform(
         argparse.Namespace(
@@ -3765,6 +3866,9 @@ def render_build_outputs(
         transform=transform,
         dpi=args.dpi,
         include_layout=True,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        contour_interval_m=contour_interval_m,
         north_line_spacing_m=args.north_line_spacing_m,
         contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
@@ -3817,7 +3921,7 @@ def command_ekp(args: argparse.Namespace) -> int:
         magnetic_date=None,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_point_report(source_data, render_output_base(build_args.output))
+    ensure_lidar_point_report(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -3862,7 +3966,7 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
         magnetic_date=None,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_point_report(source_data, render_output_base(build_args.output))
+    ensure_lidar_point_report(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -4095,6 +4199,9 @@ def command_render_png(args: argparse.Namespace) -> int:
         transform=transform,
         dpi=args.dpi,
         include_layout=not args.no_layout,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        contour_interval_m=resolve_contour_interval_m(args.contour_interval_m, clipped_geojson),
         north_line_spacing_m=args.north_line_spacing_m,
         contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
@@ -4137,6 +4244,9 @@ def command_render(args: argparse.Namespace) -> int:
         transform=transform,
         dpi=args.dpi,
         include_layout=not args.no_layout,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        contour_interval_m=contour_interval_m,
         north_line_spacing_m=args.north_line_spacing_m,
         contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )

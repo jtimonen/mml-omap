@@ -1,5 +1,7 @@
 # mml-omap
 
+![Espoon keskuspuisto demo map](docs/ekp.png)
+
 Generate orienteering-oriented maps from Maanmittauslaitos vector data and
 laser scanning point clouds.
 

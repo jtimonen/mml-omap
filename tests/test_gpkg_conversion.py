@@ -607,14 +607,16 @@ class OrienteeringBoundsTest(unittest.TestCase):
                     (2.0, 2.0, 14.0, 1),
                 ],
                 output_path,
-                bbox=[0.0, 0.0, 2.0, 2.0],
-                pixels_per_m=2.0,
+                transform=RenderTransform([0.0, 0.0, 2.0, 2.0], 100, 5),
+                dpi=96,
             )
 
             self.assertTrue(output_path.exists())
             self.assertEqual(output_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
             self.assertEqual(report["height_color_ramp"], "viridis")
             self.assertEqual(report["point_count"], 3)
+            self.assertEqual(report["paper_size"], "A5 portrait")
+            self.assertEqual(report["scale"], 100)
             self.assertGreater(report["width_px"], report["plot_width_px"])
             self.assertGreater(report["height_px"], report["plot_height_px"])
             self.assertEqual(report["software_version"], __version__)

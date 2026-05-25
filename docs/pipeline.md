@@ -69,13 +69,14 @@ report includes the contour interval, downloaded laser sheets, point-cloud grid
 parameters, global and per-cell noise estimates, interpolation distances, and
 generated feature counts.
 
-Each source-data build also writes one `*-lidar-points.png` diagnostic image of
-the point cloud inside the terrain context bbox. Every observed point is plotted
-at its map position and colored by height with the viridis color ramp. The image
-has margins with a title, the generating `mml-omap` version, point count, and a
-height color scale showing the elevation range used for the ramp. All terrain
-reports generated from the same source data reference that same image path,
-pixel size, point count, software version, and height range.
+Each source-data build also writes one `*-lidar-points.png` diagnostic image on
+the same standard paper size, orientation, scale, and map frame as the rendered
+map. Every observed point inside the rendered map frame is plotted at its map
+position and colored by height with the viridis color ramp. The image includes
+the same footer metadata as the map outputs plus point count and a height color
+scale showing the elevation range used for the ramp. All terrain reports
+generated from the same source data reference that same image path, pixel size,
+point count, software version, paper size, scale, and height range.
 
 ## Ground Model
 

@@ -26,6 +26,7 @@ from mml_omap.cli import (
     iof_symbol_metadata,
     merge_contour_features,
     read_env_file_value,
+    render_lidar_height_png,
     render_output_base,
     render_pdf,
     render_svg,
@@ -532,6 +533,25 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertEqual(report["observation_model"], "elevation_observation(x,y) = mu(x,y) + epsilon")
         self.assertIn("global_noise_estimate_m", report)
+
+    def test_lidar_height_png_reports_viridis_point_render(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "points.png"
+            report = render_lidar_height_png(
+                [
+                    (0.0, 0.0, 10.0, 2),
+                    (1.0, 1.0, 12.0, 5),
+                    (2.0, 2.0, 14.0, 1),
+                ],
+                output_path,
+                bbox=[0.0, 0.0, 2.0, 2.0],
+                pixels_per_m=2.0,
+            )
+
+            self.assertTrue(output_path.exists())
+            self.assertEqual(output_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(report["height_color_ramp"], "viridis")
+            self.assertEqual(report["point_count"], 3)
 
     def test_extract_laser_paths_accepts_direct_laz_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

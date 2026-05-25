@@ -76,6 +76,7 @@ The command writes:
 
 - `builds/examples/espoo-keskuspuisto/mapant-center-1m.geojson`
 - `builds/examples/espoo-keskuspuisto/mapant-center-1m.png`
+- `builds/examples/espoo-keskuspuisto/mapant-center-1m-lidar-points.png`
 - `builds/examples/espoo-keskuspuisto/mapant-center-1m.pdf`
 - `builds/examples/espoo-keskuspuisto/mapant-center-1m-symbols.pdf`
 - matching `mapant-center-2_5m.*` and `mapant-center-5m.*` outputs

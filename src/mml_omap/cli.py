@@ -1630,6 +1630,7 @@ def ground_grid_from_lidar_points(
     known_confidence = confidence[known_row, known_column]
     all_row, all_column = np.indices(grid.shape)
     missing = np.isnan(grid)
+    fill_distances = np.asarray([], dtype=float)
     if np.any(missing):
         progress(f"Interpolating {int(np.count_nonzero(missing))} empty ground grid cells...")
         query_xy = np.column_stack((all_column[missing].astype(float), all_row[missing].astype(float))) * cell_size_m
@@ -1637,8 +1638,9 @@ def ground_grid_from_lidar_points(
             known_xy,
             query_xy,
             neighbor_count=min(8, len(known_z)),
-            max_distance_m=fill_max_distance_m,
+            max_distance_m=math.inf,
         )
+        fill_distances = distances[:, 0]
         valid = indexes < len(known_z)
         safe_distances = np.where(valid, distances, np.inf)
         zero = safe_distances <= 1e-9
@@ -1649,11 +1651,17 @@ def ground_grid_from_lidar_points(
         zero_rows = np.any(zero, axis=1)
         if np.any(zero_rows):
             first_zero = np.argmax(zero[zero_rows], axis=1)
-            filled[zero_rows] = known_z[indexes[zero_rows, first_zero]]
+            zero_indexes = indexes[zero_rows]
+            filled[zero_rows] = known_z[zero_indexes[np.arange(len(first_zero)), first_zero]]
         grid[missing] = filled
-        confidence[missing] = max(float(np.nanmedian(known_confidence)) * 0.10, 1e-6)
+        distance_scale = np.maximum(fill_distances, cell_size_m)
+        confidence[missing] = (
+            max(float(np.nanmedian(known_confidence)), 1e-6)
+            * 0.10
+            / (1.0 + (distance_scale / max(fill_max_distance_m, cell_size_m)) ** 2)
+        )
     if np.isnan(grid).any():
-        raise ValueError("Point cloud has ground gaps too large to build a complete contour grid")
+        raise RuntimeError("Ground grid interpolation failed to produce a complete elevation model")
 
     if smoothing_sigma_m > 0:
         progress(
@@ -1686,6 +1694,10 @@ def ground_grid_from_lidar_points(
         "ground_quantile": ground_quantile,
         "ground_smoothing_sigma_m": smoothing_sigma_m,
         "fill_max_distance_m": fill_max_distance_m,
+        "interpolated_cell_distance_median_m": float(np.median(fill_distances)) if len(fill_distances) else 0.0,
+        "interpolated_cell_distance_p95_m": float(np.quantile(fill_distances, 0.95)) if len(fill_distances) else 0.0,
+        "interpolated_cell_distance_max_m": float(np.max(fill_distances)) if len(fill_distances) else 0.0,
+        "interpolated_cells_beyond_nominal_distance": int(np.count_nonzero(fill_distances > fill_max_distance_m)),
         "global_noise_estimate_m": global_noise_m,
         "median_cell_noise_estimate_m": float(np.median(cell_noise_values)) if len(cell_noise_values) else global_noise_m,
         "p90_cell_noise_estimate_m": float(np.quantile(cell_noise_values, 0.9)) if len(cell_noise_values) else global_noise_m,
@@ -1693,7 +1705,8 @@ def ground_grid_from_lidar_points(
     progress(
         "Ground model ready: "
         f"global noise {global_noise_m:.3f} m, "
-        f"median cell noise {report['median_cell_noise_estimate_m']:.3f} m."
+        f"median cell noise {report['median_cell_noise_estimate_m']:.3f} m, "
+        f"p95 fill distance {report['interpolated_cell_distance_p95_m']:.1f} m."
     )
     return xs, ys, points, report
 
@@ -2554,6 +2567,108 @@ def write_png(path: Path, width: int, height: int, pixels: bytearray) -> None:
     path.write_bytes(bytes(png))
 
 
+def viridis_rgb_array(values: Any) -> Any:
+    import numpy as np
+
+    anchors = np.asarray(
+        [
+            [68, 1, 84],
+            [71, 44, 122],
+            [59, 81, 139],
+            [44, 113, 142],
+            [33, 144, 141],
+            [39, 173, 129],
+            [92, 200, 99],
+            [170, 220, 50],
+            [253, 231, 37],
+        ],
+        dtype=float,
+    )
+    values = np.clip(values, 0.0, 1.0)
+    scaled = values * (len(anchors) - 1)
+    lower = np.floor(scaled).astype(int)
+    upper = np.clip(lower + 1, 0, len(anchors) - 1)
+    t = (scaled - lower)[:, None]
+    return np.rint(anchors[lower] + (anchors[upper] - anchors[lower]) * t).astype(np.uint8)
+
+
+def render_lidar_height_png(
+    rows: list[tuple[float, float, float, int | None]],
+    output_path: Path,
+    *,
+    bbox: list[float],
+    pixels_per_m: float = 1.0,
+    max_side_px: int = 4096,
+) -> dict[str, Any]:
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("LiDAR point height PNG rendering requires numpy") from exc
+
+    min_x, min_y, max_x, max_y = bbox
+    width_m = max_x - min_x
+    height_m = max_y - min_y
+    if width_m <= 0 or height_m <= 0:
+        raise ValueError("LiDAR diagnostic bbox must have positive width and height")
+    scale = min(pixels_per_m, max_side_px / width_m, max_side_px / height_m)
+    scale = max(scale, 1e-6)
+    width = max(1, int(math.ceil(width_m * scale)) + 1)
+    height = max(1, int(math.ceil(height_m * scale)) + 1)
+    image = np.full((height, width, 4), 255, dtype=np.uint8)
+
+    raw = np.asarray(rows, dtype=float)
+    if raw.ndim != 2 or raw.shape[1] < 3:
+        raise ValueError("Point rows must contain x, y, z")
+    mask = (
+        np.isfinite(raw[:, 0])
+        & np.isfinite(raw[:, 1])
+        & np.isfinite(raw[:, 2])
+        & (raw[:, 0] >= min_x)
+        & (raw[:, 0] <= max_x)
+        & (raw[:, 1] >= min_y)
+        & (raw[:, 1] <= max_y)
+    )
+    points = raw[mask]
+    if len(points):
+        z = points[:, 2]
+        z_min = float(np.quantile(z, 0.01))
+        z_max = float(np.quantile(z, 0.99))
+        if z_max <= z_min:
+            z_min = float(np.min(z))
+            z_max = float(np.max(z))
+        if z_max <= z_min:
+            z_max = z_min + 1.0
+        normalized = (z - z_min) / (z_max - z_min)
+        colors = viridis_rgb_array(normalized)
+        x = np.clip(np.rint((points[:, 0] - min_x) * scale).astype(int), 0, width - 1)
+        y = np.clip(np.rint((max_y - points[:, 1]) * scale).astype(int), 0, height - 1)
+        image[y, x, 0:3] = colors
+        image[y, x, 3] = 255
+    else:
+        z_min = 0.0
+        z_max = 0.0
+
+    pixels = bytearray(image.reshape(height * width * 4).tobytes())
+    write_png(output_path, width, height, pixels)
+    report = {
+        "path": str(output_path),
+        "bbox": bbox,
+        "width_px": width,
+        "height_px": height,
+        "pixels_per_m": scale,
+        "point_count": int(len(points)),
+        "height_color_ramp": "viridis",
+        "height_color_min_m": z_min,
+        "height_color_max_m": z_max,
+        "height_color_range": "1st to 99th percentile, clamped",
+    }
+    progress(
+        "Wrote LiDAR point height PNG "
+        f"to {output_path} with {len(points)} points colored by height."
+    )
+    return report
+
+
 def render_png_with_pillow(
     geojson: dict[str, Any],
     output_path: Path,
@@ -3388,8 +3503,9 @@ def build_combined_map(args: argparse.Namespace) -> tuple[dict[str, Any], dict[s
 
 def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
-    combined, report = build_combined_map(args)
-    render_build_outputs(output_base, combined, report, args)
+    source_data = build_source_data(args)
+    combined, report = combined_map_from_source_data(source_data, args, interval_m=args.interval_m)
+    render_build_outputs(output_base, combined, report, args, source_data=source_data)
     return 0
 
 
@@ -3398,9 +3514,17 @@ def render_build_outputs(
     combined: dict[str, Any],
     report: dict[str, Any],
     args: argparse.Namespace,
+    *,
+    source_data: dict[str, Any],
 ) -> None:
     geojson_path = output_base.with_suffix(".geojson")
     write_json(geojson_path, combined)
+    lidar_point_report = render_lidar_height_png(
+        source_data["lidar_rows"],
+        output_base.with_name(output_base.name + "-lidar-points").with_suffix(".png"),
+        bbox=source_data["terrain_bbox"],
+    )
+    report["lidar_point_height_png"] = lidar_point_report
     write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
     transform = make_render_transform(
         argparse.Namespace(
@@ -3489,7 +3613,7 @@ def command_ekp(args: argparse.Namespace) -> int:
         output_base = render_output_base(build_args.output).with_name(
             f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
         )
-        render_build_outputs(output_base, combined, report, build_args)
+        render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0
 
 

@@ -27,7 +27,14 @@ frame.
 
 Each render writes a `*-terrain-report.json` file next to the map outputs. The
 report includes the contour interval, downloaded laser sheets, point-cloud grid
-parameters, global and per-cell noise estimates, and generated feature counts.
+parameters, global and per-cell noise estimates, interpolation distances, and
+generated feature counts.
+
+Each render also writes `*-lidar-points.png`, a diagnostic image of the point
+cloud inside the terrain context bbox. Every observed point is plotted at its
+map position and colored by height with the viridis color ramp. The terrain
+report records the image path, pixel size, point count, and height range used
+for coloring.
 
 ## Ground Model
 
@@ -38,8 +45,11 @@ quantile, median by default, so multiple points in the same cell become one
 terrain estimate instead of forcing the surface through every return.
 
 Empty cells are filled from nearby ground cells with inverse-distance weighting
-from a KD-tree search. If a hole is too large to fill, the build fails instead
-of silently falling back to a coarser elevation product.
+from a KD-tree search. The model is always completed across the requested map
+frame when there are classified ground points in the area. Cells farther than
+the nominal fill distance are still interpolated, but they get lower confidence
+and are counted in the terrain report instead of falling back to a coarser
+elevation product.
 
 The model is treated as noisy observations of a latent ground surface:
 

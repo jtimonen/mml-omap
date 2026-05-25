@@ -13,10 +13,11 @@
   - Built-in symbol-library or renderer-symbol contract changes must update
     `docs/isom-symbol-library.md`.
 - Version committed or released code changes:
-  - Keep `pyproject.toml` `project.version` and
-    `src/mml_omap/__init__.py` `__version__` identical.
+  - `pyproject.toml` `project.version` is the source of truth.
+  - `src/mml_omap/__init__.py` must read the installed package metadata version,
+    not hardcode a separate version string.
   - Before committing or releasing behavior, CLI, output, dependency, or public
-    API changes, bump both version declarations in the same change set.
+    API changes, bump `pyproject.toml` and update `CHANGELOG.md`.
 - Do not keep backwards-compatibility shims, duplicate old workflows, fallback
   code paths, or dead code unless the user explicitly asks for compatibility.
   Prefer one current path that uses the best available combined data sources,

@@ -5,10 +5,9 @@ laser scanning point clouds.
 
 The normal workflow is one command: download MML topographic vector data,
 download the covering 0.5 p LAZ map sheets, build the terrain model from the
-point cloud, then write GeoJSON, PNG, PDF, and a symbol-number PDF.
-
-This is alpha software. It can produce a useful generated base map and terrain
-candidate layers, but it is not a field-checked ISOM/ISSprOM production tool.
+point cloud, then write GeoJSON, PNG, PDF, a LiDAR diagnostic PNG, and a terrain
+report. Rendered maps use the smallest A5, A4, or A3 portrait/landscape page
+that fits the requested map frame at the requested scale.
 
 Coordinates are ETRS-TM35FIN / EPSG:3067 meters, matching the native MML file
 service output.
@@ -62,8 +61,9 @@ Do not commit `.env`.
 
 ## Espoon Keskuspuisto Example
 
-This is centered on the MapAnt location `60.1880680, 24.6967986`. The bbox is
-`371255,6673869,373305,6675299` in EPSG:3067 meters.
+This 1:10000 example is centered on Espoon keskuspuisto at
+`60.1880680, 24.6967986`. The bbox is `371255,6673869,373305,6675299` in
+EPSG:3067 meters.
 
 All generated files go under `builds/examples/espoo-keskuspuisto/`, which is
 easy to gitignore or delete.
@@ -85,9 +85,9 @@ The command writes:
 
 ## Kotka-Jukola Example
 
-This is centered around Kymin lentokenttä and covers the Kotka-Jukola 2026
-harjoituskieltoalue shown on the event site. The bbox is
-`492200,6712050,496400,6718050` in EPSG:3067 meters.
+This 1:10000 example is centered around Kymin lentokenttä and covers part of
+the Kotka-Jukola 2026 harjoituskieltoalue shown on the event site. The bbox is
+`492900,6713000,495700,6717100` in EPSG:3067 meters.
 
 All generated files go under `builds/examples/kotka-jukola/`.
 

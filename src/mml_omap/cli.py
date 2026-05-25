@@ -28,6 +28,7 @@ from typing import Any
 
 import certifi
 
+from . import __version__
 from .symbols import (
     DEFAULT_STYLE,
     IOF_NUMBER_TO_RENDER_SYMBOL,
@@ -43,6 +44,11 @@ MML_OGC_PROCESSES_URL = (
 )
 A3_WIDTH_MM = 420.0
 A3_HEIGHT_MM = 297.0
+STANDARD_PAPER_SIZES_MM = (
+    ("A5", 148.0, 210.0),
+    ("A4", 210.0, 297.0),
+    ("A3", 297.0, 420.0),
+)
 MAX_ORIENTEERING_SCALE = 15000
 EPSG3067_FALSE_EASTING = 500000.0
 EPSG3067_FALSE_NORTHING = 0.0
@@ -2032,8 +2038,13 @@ class RenderTransform:
         self._cos_declination = math.cos(angle)
         self.map_width_mm = self.width_m * 1000.0 / self.scale
         self.map_height_mm = self.height_m * 1000.0 / self.scale
-        self.page_width_mm = self.map_width_mm + self.margin_mm * 2.0
-        self.page_height_mm = self.map_height_mm + self.margin_mm * 2.0
+        self.paper_size, self.page_width_mm, self.page_height_mm = choose_standard_paper_size(
+            self.map_width_mm,
+            self.map_height_mm,
+            self.margin_mm,
+        )
+        self.map_left_mm = (self.page_width_mm - self.map_width_mm) / 2.0
+        self.map_top_mm = (self.page_height_mm - self.map_height_mm) / 2.0
 
     def to_mm(self, coordinate: Any) -> tuple[float, float]:
         if not isinstance(coordinate, (list, tuple)) or len(coordinate) < 2:
@@ -2042,9 +2053,25 @@ class RenderTransform:
         dy = float(coordinate[1]) - self.center_y
         map_x = self._cos_declination * dx - self._sin_declination * dy
         map_y = self._sin_declination * dx + self._cos_declination * dy
-        x = self.margin_mm + (self.width_m / 2.0 + map_x) * 1000.0 / self.scale
-        y = self.margin_mm + (self.height_m / 2.0 - map_y) * 1000.0 / self.scale
+        x = self.map_left_mm + (self.width_m / 2.0 + map_x) * 1000.0 / self.scale
+        y = self.map_top_mm + (self.height_m / 2.0 - map_y) * 1000.0 / self.scale
         return x, y
+
+
+def choose_standard_paper_size(map_width_mm: float, map_height_mm: float, margin_mm: float) -> tuple[str, float, float]:
+    required_width_mm = map_width_mm + margin_mm * 2.0
+    required_height_mm = map_height_mm + margin_mm * 2.0
+    for name, short_side_mm, long_side_mm in STANDARD_PAPER_SIZES_MM:
+        for orientation, width_mm, height_mm in (
+            ("portrait", short_side_mm, long_side_mm),
+            ("landscape", long_side_mm, short_side_mm),
+        ):
+            if required_width_mm <= width_mm + 1e-9 and required_height_mm <= height_mm + 1e-9:
+                return f"{name} {orientation}", width_mm, height_mm
+    raise ValueError(
+        "Requested map does not fit on A5, A4, or A3 at the requested scale and margin: "
+        f"needs {required_width_mm:.1f} mm x {required_height_mm:.1f} mm"
+    )
 
 
 def feature_symbol(feature: dict[str, Any]) -> str:
@@ -2338,7 +2365,8 @@ def resolve_contour_interval_m(raw_value: str, geojson: dict[str, Any]) -> float
 
 def map_footer_text(transform: RenderTransform, map_maker: str, contour_interval_m: float) -> str:
     return (
-        f"Scale 1:{transform.scale} | {map_maker} | "
+        f"{transform.paper_size} | Scale 1:{transform.scale} | {map_maker} | "
+        f"mml-omap {__version__} | "
         f"{contour_interval_text(contour_interval_m)} | "
         f"KOK {transform.magnetic_declination_deg:.2f} deg | EPSG:3067"
     )
@@ -2351,8 +2379,8 @@ def north_line_x_positions(transform: RenderTransform, spacing_m: float) -> list
     if spacing_mm <= 0:
         return []
     positions: list[float] = []
-    x = transform.margin_mm + spacing_mm
-    max_x = transform.margin_mm + transform.map_width_mm
+    x = transform.map_left_mm + spacing_mm
+    max_x = transform.map_left_mm + transform.map_width_mm
     while x < max_x - 0.001:
         positions.append(x)
         x += spacing_mm
@@ -2371,12 +2399,12 @@ def append_svg_layout(
 ) -> None:
     for x in north_line_x_positions(transform, north_line_spacing_m):
         lines.append(
-            f'<line x1="{x:.3f}" y1="{transform.margin_mm:.3f}" '
-            f'x2="{x:.3f}" y2="{transform.margin_mm + transform.map_height_mm:.3f}" '
+            f'<line x1="{x:.3f}" y1="{transform.map_top_mm:.3f}" '
+            f'x2="{x:.3f}" y2="{transform.map_top_mm + transform.map_height_mm:.3f}" '
             f'stroke="#6f2dbd" stroke-width="0.180"/>'
         )
-    frame_x = transform.margin_mm
-    frame_y = transform.margin_mm
+    frame_x = transform.map_left_mm
+    frame_y = transform.map_top_mm
     lines.append(
         f'<rect x="{frame_x:.3f}" y="{frame_y:.3f}" '
         f'width="{transform.map_width_mm:.3f}" height="{transform.map_height_mm:.3f}" '
@@ -2385,15 +2413,15 @@ def append_svg_layout(
     title = html.escape(map_title(output_path, map_title_text))
     footer = html.escape(map_footer_text(transform, map_maker, contour_interval_m))
     lines.append(
-        f'<text x="{transform.margin_mm:.3f}" y="{max(transform.margin_mm - 1.2, 3.0):.3f}" '
+        f'<text x="{transform.map_left_mm:.3f}" y="{max(transform.map_top_mm - 1.2, 3.0):.3f}" '
         f'font-family="Arial, Helvetica, sans-serif" font-size="3.2" fill="#000000">{title}</text>'
     )
     lines.append(
-        f'<text x="{transform.margin_mm:.3f}" y="{transform.page_height_mm - 1.5:.3f}" '
+        f'<text x="{transform.map_left_mm:.3f}" y="{transform.page_height_mm - 1.5:.3f}" '
         f'font-family="Arial, Helvetica, sans-serif" font-size="2.6" fill="#000000">{footer}</text>'
     )
-    north_x = transform.page_width_mm - transform.margin_mm - 4.0
-    north_y = max(transform.margin_mm - 1.0, 4.5)
+    north_x = transform.map_left_mm + transform.map_width_mm - 4.0
+    north_y = max(transform.map_top_mm - 1.0, 4.5)
     lines.append(
         f'<text x="{north_x:.3f}" y="{north_y:.3f}" text-anchor="middle" '
         f'font-family="Arial, Helvetica, sans-serif" font-size="3.0" fill="#000000">N</text>'
@@ -2875,8 +2903,8 @@ def render_png_with_pillow(
         line_width = max(1, int(round(0.18 * px_per_mm)))
         for x_mm in north_line_x_positions(transform, north_line_spacing_m):
             x = x_mm * px_per_mm
-            y0 = transform.margin_mm * px_per_mm
-            y1 = (transform.margin_mm + transform.map_height_mm) * px_per_mm
+            y0 = transform.map_top_mm * px_per_mm
+            y1 = (transform.map_top_mm + transform.map_height_mm) * px_per_mm
             draw.line([(x, y0), (x, y1)], fill=purple, width=line_width)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)
@@ -2968,8 +2996,8 @@ def render_png(
         purple = (111, 45, 189)
         for x_mm in north_line_x_positions(transform, north_line_spacing_m):
             x = int(round(x_mm * px_per_mm))
-            y0 = int(round(transform.margin_mm * px_per_mm))
-            y1 = int(round((transform.margin_mm + transform.map_height_mm) * px_per_mm))
+            y0 = int(round(transform.map_top_mm * px_per_mm))
+            y1 = int(round((transform.map_top_mm + transform.map_height_mm) * px_per_mm))
             draw_line(canvas, width, height, (x, y0), (x, y1), purple, max(1, int(round(0.18 * px_per_mm))))
     write_png(output_path, width, height, canvas)
     progress(f"Wrote PNG to {output_path}.")
@@ -3173,29 +3201,29 @@ def append_pdf_layout(
     commands.append(pdf_color_operator(purple, stroke=True))
     commands.append(f"{0.18 * 72.0 / 25.4:.3f} w")
     for x_mm in north_line_x_positions(transform, north_line_spacing_m):
-        x0, y0 = pdf_mm(x_mm, transform.margin_mm, transform)
-        x1, y1 = pdf_mm(x_mm, transform.margin_mm + transform.map_height_mm, transform)
+        x0, y0 = pdf_mm(x_mm, transform.map_top_mm, transform)
+        x1, y1 = pdf_mm(x_mm, transform.map_top_mm + transform.map_height_mm, transform)
         commands.append(f"{x0:.3f} {y0:.3f} m")
         commands.append(f"{x1:.3f} {y1:.3f} l")
         commands.append("S")
     commands.append("0 0 0 RG")
     commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
-    x, y = pdf_mm(transform.margin_mm, transform.margin_mm + transform.map_height_mm, transform)
+    x, y = pdf_mm(transform.map_left_mm, transform.map_top_mm + transform.map_height_mm, transform)
     commands.append(
         f"{x:.3f} {y:.3f} {transform.map_width_mm * 72.0 / 25.4:.3f} "
         f"{transform.map_height_mm * 72.0 / 25.4:.3f} re"
     )
     commands.append("S")
-    append_pdf_text(commands, transform.margin_mm, max(transform.margin_mm - 1.2, 3.0), 9.0, map_title(output_path, map_title_text), transform)
+    append_pdf_text(commands, transform.map_left_mm, max(transform.map_top_mm - 1.2, 3.0), 9.0, map_title(output_path, map_title_text), transform)
     append_pdf_text(
         commands,
-        transform.margin_mm,
+        transform.map_left_mm,
         transform.page_height_mm - 1.5,
         7.5,
         map_footer_text(transform, map_maker, contour_interval_m),
         transform,
     )
-    append_pdf_text(commands, transform.page_width_mm - transform.margin_mm - 4.0, max(transform.margin_mm - 1.0, 4.5), 9.0, "N", transform)
+    append_pdf_text(commands, transform.map_left_mm + transform.map_width_mm - 4.0, max(transform.map_top_mm - 1.0, 4.5), 9.0, "N", transform)
 
 
 def render_pdf(
@@ -3699,7 +3727,7 @@ def command_ekp(args: argparse.Namespace) -> int:
         theme="maastotietokanta_kaikki",
         work_dir=None,
         mapping=None,
-        scale=5000,
+        scale=10000,
         margin_mm=5.0,
         dpi=300,
         map_title="Espoon keskuspuisto",
@@ -3736,7 +3764,7 @@ def command_ekp(args: argparse.Namespace) -> int:
 def command_kotka_jukola(args: argparse.Namespace) -> int:
     build_args = argparse.Namespace(
         output="builds/examples/kotka-jukola/kymi-airfield",
-        bbox="492200,6712050,496400,6718050",
+        bbox="492900,6713000,495700,6717100",
         api_key=args.api_key,
         api_key_env=args.api_key_env,
         base_url=args.base_url,
@@ -3745,7 +3773,7 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
         theme="maastotietokanta_kaikki",
         work_dir=None,
         mapping=None,
-        scale=15000,
+        scale=10000,
         margin_mm=5.0,
         dpi=300,
         map_title="Kotka-Jukola harjoituskieltoalue",

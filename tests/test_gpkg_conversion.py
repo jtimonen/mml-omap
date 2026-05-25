@@ -12,6 +12,7 @@ from mml_omap.cli import (
     DEFAULT_TABLE_RULES,
     OrientedFrame,
     RenderTransform,
+    choose_standard_paper_size,
     clip_geometry_to_frame,
     convert_gpkg_to_geojson,
     download_args_for_generate,
@@ -44,6 +45,7 @@ from mml_omap.cli import (
     table_rules_with_optional_forest_mask,
     validate_orienteering_bbox_size,
 )
+from mml_omap import __version__
 
 
 def setUpModule() -> None:
@@ -158,6 +160,23 @@ class GeoPackageConversionTest(unittest.TestCase):
 
 
 class OrienteeringBoundsTest(unittest.TestCase):
+    def test_render_transform_uses_smallest_standard_paper_size(self) -> None:
+        a5 = RenderTransform([0, 0, 1000, 500], scale=10000, margin_mm=5)
+        self.assertEqual(a5.paper_size, "A5 portrait")
+        self.assertEqual((a5.page_width_mm, a5.page_height_mm), (148.0, 210.0))
+
+        a4 = RenderTransform([0, 0, 2500, 1800], scale=10000, margin_mm=5)
+        self.assertEqual(a4.paper_size, "A4 landscape")
+        self.assertEqual((a4.page_width_mm, a4.page_height_mm), (297.0, 210.0))
+
+        a3 = RenderTransform([0, 0, 4200, 6000], scale=15000, margin_mm=5)
+        self.assertEqual(a3.paper_size, "A3 portrait")
+        self.assertEqual((a3.page_width_mm, a3.page_height_mm), (297.0, 420.0))
+
+    def test_standard_paper_size_rejects_maps_larger_than_a3(self) -> None:
+        with self.assertRaisesRegex(ValueError, "does not fit"):
+            choose_standard_paper_size(430.0, 100.0, 5.0)
+
     def test_a3_15000_bbox_limit_accepts_portrait_or_landscape(self) -> None:
         validate_orienteering_bbox_size([0, 0, 6300, 4455])
         validate_orienteering_bbox_size([0, 0, 4455, 6300])
@@ -342,6 +361,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertIn("Scale 1:5000", svg)
         self.assertIn("Contours 5 m", svg)
         self.assertIn("Test maker", svg)
+        self.assertIn(f"mml-omap {__version__}", svg)
         self.assertIn("KOK 8.50 deg", svg)
         self.assertIn('stroke="#6f2dbd"', svg)
 

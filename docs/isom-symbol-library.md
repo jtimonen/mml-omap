@@ -58,5 +58,5 @@ Each entry includes:
 
 Generated GeoJSON still uses ISOM symbol numbers in `properties.symbol`; the
 renderer maps those numbers back to the internal render symbol definitions.
-This applies to both MML GeoPackage-derived features and LiDAR/DEM-derived
+This applies to both MML GeoPackage-derived features and point-cloud-derived
 terrain features.

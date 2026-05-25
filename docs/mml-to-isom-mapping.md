@@ -69,17 +69,17 @@ Features without an ISOM symbol assignment are skipped by default. With
 | `rakennusreunaviiva` | all | `521` | Building | Building outline linework. |
 | `taajaanrakennettualue` | all | `520` | Area that shall not be entered | Broad proxy for private/built-up area; not field-checked. |
 
-## LiDAR/DEM-Derived Terrain Features
+## Point-Cloud-Derived Terrain Features
 
 The combined build does not derive contours, cliffs, or vegetation from MML
 `kohdeluokka` mappings. It writes already-numbered candidate terrain features
-from local LiDAR/DEM inputs:
+from downloaded MML laser scanning point clouds:
 
 | Build component | Input | ISOM output | Notes |
 | --- | --- | --- | --- |
-| Contours | regular ground-elevation XYZ grid | `101`, `102` | Uses the requested contour interval, emits every fifth line as index contour by default, and stores `korkeusarvo` in millimetres. |
-| Cliffs | regular ground-elevation XYZ grid | `202` | Candidate cliff lines from steep slope bands; passability and final symbol choice need review. |
-| Vegetation | LAS/LAZ or text rows `x y z [classification]` | `406`, `410` | Candidate vegetation polygons from above-ground point density. |
+| Contours | point-cloud-derived ground grid | `101`, `102` | Uses the requested contour interval, emits every fifth line as index contour by default, and stores `korkeusarvo` in millimetres. |
+| Cliffs | point-cloud-derived ground grid | `202` | Candidate cliff lines from steep slope bands; passability and final symbol choice need review. |
+| Vegetation | LAS/LAZ points | `406`, `410` | Candidate vegetation polygons from above-ground point density. |
 
 ## Explicitly Not Emitted By Default
 

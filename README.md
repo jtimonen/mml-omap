@@ -1,11 +1,11 @@
 # mml-omap
 
-Generate orienteering-oriented maps from Maanmittauslaitos vector data plus
-local LiDAR/DEM-derived terrain inputs.
+Generate orienteering-oriented maps from Maanmittauslaitos vector data and
+laser scanning point clouds.
 
 The normal workflow is one command: download MML topographic vector data,
-combine it with a regular ground-elevation XYZ grid and LAS/LAZ point cloud,
-then write GeoJSON, PNG, PDF, and a symbol-number PDF.
+download the covering 0.5 p LAZ map sheets, build the terrain model from the
+point cloud, then write GeoJSON, PNG, PDF, and a symbol-number PDF.
 
 This is alpha software. It can produce a useful generated base map and terrain
 candidate layers, but it is not a field-checked ISOM/ISSprOM production tool.
@@ -54,15 +54,11 @@ Do not commit `.env`.
 
 ## Inputs
 
-`mml-omap build` combines three data sources for the same EPSG:3067 map frame:
+`mml-omap build` combines data sources for the same EPSG:3067 map frame:
 
 - MML vector data downloaded automatically from `maastotietokanta_bbox`.
-- A regular ground-elevation XYZ grid, `x y z`, used for contours and cliffs.
-- LAS/LAZ or text point rows, `x y z [classification]`, used for vegetation.
-
-The tool does not yet download MML laser scanning point clouds or elevation
-model rasters. Prepare the local XYZ and LAS/LAZ inputs with PDAL, GDAL,
-LAStools, QGIS, or equivalent tooling before running the build.
+- MML 0.5 p laser scanning data downloaded automatically from
+  `laserkeilausaineisto_05_karttalehti`.
 
 ## Espoon Keskuspuisto Example
 
@@ -73,7 +69,7 @@ All generated files go under `builds/examples/espoo-keskuspuisto/`, which is
 easy to gitignore or delete.
 
 ```sh
-uv run mml-omap build builds/examples/espoo-keskuspuisto/mapant-center 371255,6673869,373305,6675299 builds/examples/espoo-keskuspuisto/lidar-ground.xyz builds/examples/espoo-keskuspuisto/laser.laz
+uv run mml-omap ekp
 ```
 
 The command writes:
@@ -90,16 +86,16 @@ The build output combines:
 
 - MML vector objects: paths, roads, water, marshes, open-land proxies,
   buildings, fences, rocks, MML cliff vectors, and other mapped features.
-- DEM/LiDAR contours: generated from the regular XYZ height grid with index
-  contours.
-- DEM/LiDAR cliff candidates: generated from steep slope bands in the same
-  height grid.
-- LiDAR vegetation: generated from above-ground point density into ISOM
-  `406`/`410` candidate vegetation polygons.
+- Point-cloud contours: generated from a continuous ground grid built from
+  classified LAZ ground points.
+- Point-cloud cliff candidates: generated from steep slope bands in the same
+  ground grid.
+- Point-cloud vegetation: generated from above-ground point density into ISOM
+  `406`/`410` candidate polygons.
 - A magnetic-north paper frame with map layout metadata in PNG/PDF output.
 
-Green vegetation comes from the LiDAR point-density pipeline so runnable forest
-can remain white.
+The point cloud is downloaded for a slightly larger terrain context bbox and
+the final generated features are clipped back to the requested map frame.
 
 ## Coordinate System
 

@@ -114,6 +114,7 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
 
 DEFAULT_NORTH_LINE_SPACING_M = 300.0
 DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 20.0
+DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
 
 
 def read_json(path: Path) -> Any:
@@ -223,6 +224,10 @@ def format_bbox(bbox: list[float]) -> str:
 
 def bbox_center(bbox: list[float]) -> tuple[float, float]:
     return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+
+
+def expand_bbox(bbox: list[float], margin_m: float) -> list[float]:
+    return [bbox[0] - margin_m, bbox[1] - margin_m, bbox[2] + margin_m, bbox[3] + margin_m]
 
 
 def parse_date(raw: str | None) -> dt.date:
@@ -429,14 +434,63 @@ def submit_mml_bbox_job(
     theme: str,
     base_url: str,
 ) -> str:
-    process_id = "maastotietokanta_bbox"
+    return submit_bbox_process_job(
+        api_key=api_key,
+        bbox=bbox,
+        process_id="maastotietokanta_bbox",
+        file_format="GPKG",
+        base_url=base_url,
+        extra_inputs={"themeInput": theme},
+    )
+
+
+def submit_bbox_process_job(
+    *,
+    api_key: str,
+    bbox: list[float],
+    process_id: str,
+    file_format: str,
+    base_url: str,
+    extra_inputs: dict[str, Any] | None = None,
+) -> str:
+    inputs: dict[str, Any] = {
+        "boundingBoxInput": bbox,
+        "fileFormatInput": file_format,
+    }
+    if extra_inputs:
+        inputs.update(extra_inputs)
     payload = {
         "id": process_id,
-        "inputs": {
-            "boundingBoxInput": bbox,
-            "themeInput": theme,
-            "fileFormatInput": "GPKG",
-        },
+        "inputs": inputs,
+    }
+    response = post_json(f"{base_url}/processes/{process_id}/execution", api_key, payload)
+    for link in response.get("links", []):
+        if link.get("rel") == "self" and link.get("href"):
+            return str(link["href"])
+    job_id = response.get("jobID")
+    if not job_id:
+        raise RuntimeError(f"MML execution response did not include a job link: {response}")
+    return f"{base_url}/jobs/{job_id}"
+
+
+def submit_map_sheet_process_job(
+    *,
+    api_key: str,
+    map_sheets: list[str],
+    process_id: str,
+    file_format: str,
+    base_url: str,
+    extra_inputs: dict[str, Any] | None = None,
+) -> str:
+    inputs: dict[str, Any] = {
+        "mapSheetInput": map_sheets,
+        "fileFormatInput": file_format,
+    }
+    if extra_inputs:
+        inputs.update(extra_inputs)
+    payload = {
+        "id": process_id,
+        "inputs": inputs,
     }
     response = post_json(f"{base_url}/processes/{process_id}/execution", api_key, payload)
     for link in response.get("links", []):
@@ -484,6 +538,18 @@ def pick_download_url(results: dict[str, Any]) -> str:
         if path.lower().endswith(".gpkg") or path.lower().endswith(".zip"):
             return path
     raise RuntimeError(f"MML results did not include a downloadable GeoPackage or zip: {results}")
+
+
+def pick_download_url_by_suffix(results: dict[str, Any], suffixes: tuple[str, ...]) -> str:
+    lowered_suffixes = tuple(suffix.lower() for suffix in suffixes)
+    for result in results.get("results", []):
+        path = str(result.get("path", ""))
+        if path.lower().endswith(lowered_suffixes):
+            return path
+    for result in results.get("results", []):
+        if result.get("zipPath"):
+            return str(result["zipPath"])
+    raise RuntimeError(f"MML results did not include a downloadable file ending in {suffixes}: {results}")
 
 
 def extract_first_gpkg(archive_path: Path, output_dir: Path) -> Path:
@@ -1134,7 +1200,7 @@ def contour_features_from_xyz_grid(
     interval_m: float,
     min_level: float | None = None,
     max_level: float | None = None,
-    simplify_tolerance_m: float = 0.6,
+    simplify_tolerance_m: float = 0.0,
     index_contour_every: int = 5,
 ) -> list[dict[str, Any]]:
     import contourpy
@@ -1362,6 +1428,123 @@ def read_lidar_point_rows(path: Path) -> list[tuple[float, float, float, int | N
     if not rows:
         raise ValueError("Point input did not contain any points")
     return rows
+
+
+def read_lidar_point_rows_many(paths: list[Path]) -> list[tuple[float, float, float, int | None]]:
+    rows: list[tuple[float, float, float, int | None]] = []
+    for path in paths:
+        rows.extend(read_lidar_point_rows(path))
+    return rows
+
+
+def tm35_map_sheets_for_bbox(bbox: list[float]) -> list[str]:
+    try:
+        from tm35fin import Coordinates
+    except ImportError as exc:
+        raise RuntimeError("Automatic MML laser sheet resolution requires the tm35fin dependency") from exc
+
+    min_x, min_y, max_x, max_y = bbox
+    sample_step_m = 3000.0
+    xs = coordinate_samples(min_x, max_x, sample_step_m)
+    ys = coordinate_samples(min_y, max_y, sample_step_m)
+    names = {
+        Coordinates(x, y).tile.name
+        for x in xs
+        for y in ys
+    }
+    return sorted(names)
+
+
+def coordinate_samples(min_value: float, max_value: float, step: float) -> list[float]:
+    values = [min_value]
+    current = math.floor(min_value / step) * step
+    while current <= max_value:
+        if min_value <= current <= max_value:
+            values.append(current)
+        current += step
+    values.append(max_value)
+    return sorted(set(values))
+
+
+def ground_grid_from_lidar_points(
+    rows: list[tuple[float, float, float, int | None]],
+    *,
+    bbox: list[float],
+    cell_size_m: float,
+    ground_quantile: float = 0.5,
+    fill_max_distance_m: float = 12.0,
+) -> tuple[list[float], list[float], dict[tuple[float, float], float]]:
+    try:
+        import numpy as np
+        from scipy.spatial import cKDTree
+    except ImportError as exc:
+        raise RuntimeError("Point-cloud ground gridding requires numpy and scipy") from exc
+
+    if cell_size_m <= 0:
+        raise ValueError("--ground-cell-size-m must be greater than zero")
+    if not 0.0 <= ground_quantile <= 1.0:
+        raise ValueError("--ground-quantile must be between 0 and 1")
+    min_x, min_y, max_x, max_y = bbox
+    ground_rows = [
+        (x, y, z)
+        for x, y, z, classification in rows
+        if min_x <= x <= max_x
+        and min_y <= y <= max_y
+        and (classification == 2 or classification is None)
+    ]
+    if not ground_rows:
+        raise ValueError("No classified ground points found inside the map frame")
+
+    columns = int(math.ceil((max_x - min_x) / cell_size_m)) + 1
+    rows_count = int(math.ceil((max_y - min_y) / cell_size_m)) + 1
+    xs = [min_x + column * cell_size_m for column in range(columns)]
+    ys = [min_y + row * cell_size_m for row in range(rows_count)]
+    grid = np.full((rows_count, columns), np.nan, dtype=float)
+    cell_values: dict[tuple[int, int], list[float]] = {}
+    for x, y, z in ground_rows:
+        column = min(max(int(round((x - min_x) / cell_size_m)), 0), columns - 1)
+        row = min(max(int(round((y - min_y) / cell_size_m)), 0), rows_count - 1)
+        cell_values.setdefault((row, column), []).append(z)
+    for (row, column), values in cell_values.items():
+        grid[row, column] = float(np.quantile(np.asarray(values, dtype=float), ground_quantile))
+
+    known_row, known_column = np.where(~np.isnan(grid))
+    known_xy = np.column_stack((known_column.astype(float), known_row.astype(float))) * cell_size_m
+    known_z = grid[known_row, known_column]
+    all_row, all_column = np.indices(grid.shape)
+    missing = np.isnan(grid)
+    if np.any(missing):
+        query_xy = np.column_stack((all_column[missing].astype(float), all_row[missing].astype(float))) * cell_size_m
+        neighbor_count = min(8, len(known_z))
+        tree = cKDTree(known_xy)
+        distances, indexes = tree.query(query_xy, k=neighbor_count, distance_upper_bound=fill_max_distance_m)
+        if neighbor_count == 1:
+            distances = distances[:, np.newaxis]
+            indexes = indexes[:, np.newaxis]
+        filled = []
+        for point_distances, point_indexes in zip(distances, indexes):
+            valid = point_indexes < len(known_z)
+            if not np.any(valid):
+                filled.append(np.nan)
+                continue
+            valid_distances = point_distances[valid]
+            valid_indexes = point_indexes[valid]
+            zero = valid_distances <= 1e-9
+            if np.any(zero):
+                filled.append(float(known_z[valid_indexes[zero][0]]))
+                continue
+            weights = 1.0 / (valid_distances * valid_distances)
+            filled.append(float(np.sum(weights * known_z[valid_indexes]) / np.sum(weights)))
+        grid[missing] = np.asarray(filled)
+    if np.isnan(grid).any():
+        raise ValueError("Point cloud has ground gaps too large to build a complete contour grid")
+
+    points = {
+        (xs[column], ys[row]): float(grid[row, column])
+        for row in range(rows_count)
+        for column in range(columns)
+    }
+    return xs, ys, points
 
 
 def lidar_vegetation_features(
@@ -2739,6 +2922,36 @@ def command_download(args: argparse.Namespace) -> int:
     return 0
 
 
+def download_map_sheet_process_file(
+    *,
+    api_key: str,
+    map_sheets: list[str],
+    process_id: str,
+    file_format: str,
+    output_path: Path,
+    base_url: str,
+    poll_seconds: float,
+    timeout_seconds: float,
+    suffixes: tuple[str, ...],
+    extra_inputs: dict[str, Any] | None = None,
+) -> Path:
+    job_url = submit_map_sheet_process_job(
+        api_key=api_key,
+        map_sheets=map_sheets,
+        process_id=process_id,
+        file_format=file_format,
+        base_url=base_url.rstrip("/"),
+        extra_inputs=extra_inputs,
+    )
+    progress(f"MML {process_id} job URL: {job_url}")
+    status = wait_for_job(job_url, api_key, poll_seconds=poll_seconds, timeout_seconds=timeout_seconds)
+    progress(f"Fetching MML {process_id} result metadata...")
+    results = http_json(results_url_from_status(status, job_url), api_key)
+    download_url = pick_download_url_by_suffix(results, suffixes)
+    download_file(download_url, api_key, output_path)
+    return output_path
+
+
 def command_convert_gpkg(args: argparse.Namespace) -> int:
     paper_bbox = parse_orienteering_bbox(args.bbox) if args.bbox else None
     magnetic_date = parse_date(args.magnetic_date)
@@ -2837,6 +3050,34 @@ def build_combined_map(args: argparse.Namespace) -> dict[str, Any]:
     progress(f"Downloading MML vector data to {archive_path}...")
     command_download(download_args_for_generate(args, archive_path))
     gpkg_path = extract_first_gpkg(archive_path, work_dir / "mml" / output_base.stem)
+    terrain_bbox = expand_bbox(enclosing_grid_bbox(bbox, magnetic_declination_deg), args.terrain_context_margin_m)
+    laser_sheets = tm35_map_sheets_for_bbox(terrain_bbox)
+    progress(f"Downloading MML laser scanning sheets: {', '.join(laser_sheets)}")
+    laser_archive_path = work_dir / "mml" / f"{output_base.stem}-laser.zip"
+    download_map_sheet_process_file(
+        api_key=api_key,
+        map_sheets=laser_sheets,
+        process_id="laserkeilausaineisto_05_karttalehti",
+        file_format="LAZ",
+        output_path=laser_archive_path,
+        base_url=args.base_url,
+        poll_seconds=args.poll_seconds,
+        timeout_seconds=args.timeout_seconds,
+        suffixes=(".laz", ".zip"),
+        extra_inputs={"dataSetInput": "Uusin"},
+    )
+    laser_dir = work_dir / "mml" / f"{output_base.stem}-laser"
+    if laser_archive_path.suffix.lower() == ".zip":
+        laser_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(laser_archive_path) as archive:
+            laz_names = [name for name in archive.namelist() if name.lower().endswith(".laz")]
+            if not laz_names:
+                raise RuntimeError(f"No .laz file found in {laser_archive_path}")
+            for name in laz_names:
+                archive.extract(name, laser_dir)
+            laser_paths = [laser_dir / name for name in laz_names]
+    else:
+        laser_paths = [laser_archive_path]
     vector_rules = table_rules_with_optional_forest_mask(
         load_table_rules(Path(args.mapping) if args.mapping else None),
         include_forest_mask=False,
@@ -2853,13 +3094,19 @@ def build_combined_map(args: argparse.Namespace) -> dict[str, Any]:
             "magnetic_date": magnetic_date.isoformat(),
         },
     )
-    xs, ys, elevation_points = read_xyz_grid(Path(args.xyz))
+    lidar_rows = read_lidar_point_rows_many(laser_paths)
+    xs, ys, elevation_points = ground_grid_from_lidar_points(
+        lidar_rows,
+        bbox=terrain_bbox,
+        cell_size_m=args.ground_cell_size_m,
+        ground_quantile=args.ground_quantile,
+    )
     contour_features = contour_features_from_xyz_grid(
         xs,
         ys,
         elevation_points,
         interval_m=args.interval_m,
-        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.6),
+        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.0),
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
     cliff_features = cliff_features_from_xyz_grid(
@@ -2870,7 +3117,7 @@ def build_combined_map(args: argparse.Namespace) -> dict[str, Any]:
         min_length_m=args.min_cliff_length_m,
     )
     vegetation_features = lidar_vegetation_features(
-        read_lidar_point_rows(Path(args.points)),
+        lidar_rows,
         cell_size_m=args.cell_size_m,
         min_height_m=args.min_height_m,
         slow_count=args.slow_count,
@@ -2960,6 +3207,43 @@ def command_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_ekp(args: argparse.Namespace) -> int:
+    build_args = argparse.Namespace(
+        output="builds/examples/espoo-keskuspuisto/mapant-center",
+        bbox="371255,6673869,373305,6675299",
+        api_key=args.api_key,
+        api_key_env=args.api_key_env,
+        base_url=args.base_url,
+        poll_seconds=args.poll_seconds,
+        timeout_seconds=args.timeout_seconds,
+        theme="maastotietokanta_kaikki",
+        work_dir=None,
+        mapping=None,
+        scale=5000,
+        margin_mm=5.0,
+        dpi=300,
+        map_title="Espoon keskuspuisto",
+        map_maker="mml-omap",
+        interval_m=2.5,
+        contour_simplify_tolerance_m=0.0,
+        index_contour_every=5,
+        ground_cell_size_m=1.0,
+        ground_quantile=0.5,
+        terrain_context_margin_m=DEFAULT_TERRAIN_CONTEXT_MARGIN_M,
+        slope_threshold_deg=38.0,
+        min_cliff_length_m=8.0,
+        cell_size_m=4.0,
+        min_height_m=1.8,
+        slow_count=4,
+        fight_count=12,
+        north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
+        contour_merge_tolerance_m=DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
+        magnetic_declination_deg="auto",
+        magnetic_date=None,
+    )
+    return command_build(build_args)
+
+
 def command_contours_from_xyz(args: argparse.Namespace) -> int:
     xs, ys, points = read_xyz_grid(Path(args.input))
     features = contour_features_from_xyz_grid(
@@ -2969,7 +3253,7 @@ def command_contours_from_xyz(args: argparse.Namespace) -> int:
         interval_m=args.interval_m,
         min_level=args.min_level,
         max_level=args.max_level,
-        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.6),
+        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.0),
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
     geojson: dict[str, Any] = {
@@ -3058,7 +3342,7 @@ def command_terrain_from_lidar(args: argparse.Namespace) -> int:
         ys,
         points,
         interval_m=args.interval_m,
-        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.6),
+        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.0),
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
     cliff_features = cliff_features_from_xyz_grid(
@@ -3278,8 +3562,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     build.add_argument("output", help="Output base path. Writes .geojson, .png, .pdf, and -symbols.pdf.")
     build.add_argument("bbox", help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
-    build.add_argument("xyz", help="Regular ground-elevation XYZ grid in EPSG:3067 meters.")
-    build.add_argument("points", help="LAS/LAZ or text rows for vegetation: x y z [classification].")
     build.add_argument("--theme", default="maastotietokanta_kaikki")
     build.add_argument("--work-dir")
     build.add_argument("--mapping", help="JSON table mapping overrides")
@@ -3289,8 +3571,11 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--map-title", help="Title text printed in SVG/PDF layout metadata.")
     build.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG/PDF layout metadata.")
     build.add_argument("--interval-m", type=float, default=2.5)
-    build.add_argument("--contour-simplify-tolerance-m", type=float, default=0.6)
+    build.add_argument("--contour-simplify-tolerance-m", type=float, default=0.0)
     build.add_argument("--index-contour-every", type=int, default=5)
+    build.add_argument("--ground-cell-size-m", type=float, default=1.0)
+    build.add_argument("--ground-quantile", type=float, default=0.5)
+    build.add_argument("--terrain-context-margin-m", type=float, default=DEFAULT_TERRAIN_CONTEXT_MARGIN_M)
     build.add_argument("--slope-threshold-deg", type=float, default=38.0)
     build.add_argument("--min-cliff-length-m", type=float, default=8.0)
     build.add_argument("--cell-size-m", type=float, default=4.0)
@@ -3306,6 +3591,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     build.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     build.set_defaults(func=command_build)
+
+    ekp = subparsers.add_parser(
+        "ekp",
+        parents=[common_api],
+        help="Build the Espoon keskuspuisto example.",
+    )
+    ekp.set_defaults(func=command_ekp)
 
     download = subparsers.add_parser("download", parents=[common_api], help="Download MML bbox GeoPackage zip.")
     download.add_argument("output")
@@ -3364,14 +3656,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     contours = subparsers.add_parser(
         "contours-from-xyz",
-        help="Create ISOM contour GeoJSON from a LiDAR/DEM-derived regular XYZ elevation grid.",
+        help="Create ISOM contour GeoJSON from a regular ground-elevation XYZ grid.",
     )
     contours.add_argument("input", help="Whitespace- or comma-separated XYZ grid in EPSG:3067 meters.")
     contours.add_argument("output")
     contours.add_argument("--interval-m", type=float, default=2.5, help="Contour interval in meters.")
     contours.add_argument("--min-level", type=float, help="Optional lowest contour elevation in meters.")
     contours.add_argument("--max-level", type=float, help="Optional highest contour elevation in meters.")
-    contours.add_argument("--contour-simplify-tolerance-m", type=float, default=0.6)
+    contours.add_argument("--contour-simplify-tolerance-m", type=float, default=0.0)
     contours.add_argument("--index-contour-every", type=int, default=5)
     contours.add_argument("--bbox", help="Optional min_x,min_y,max_x,max_y clip in EPSG:3067 meters")
     contours.add_argument(
@@ -3384,7 +3676,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     cliffs = subparsers.add_parser(
         "cliffs-from-xyz",
-        help="Create candidate ISOM cliff GeoJSON from a LiDAR/DEM-derived regular XYZ elevation grid.",
+        help="Create candidate ISOM cliff GeoJSON from a regular ground-elevation XYZ grid.",
     )
     cliffs.add_argument("input", help="Whitespace- or comma-separated XYZ grid in EPSG:3067 meters.")
     cliffs.add_argument("output")
@@ -3419,7 +3711,7 @@ def build_parser() -> argparse.ArgumentParser:
     terrain.add_argument("--points", help="Optional LAS/LAZ or text rows for vegetation: x y z [classification].")
     terrain.add_argument("output")
     terrain.add_argument("--interval-m", type=float, default=2.5)
-    terrain.add_argument("--contour-simplify-tolerance-m", type=float, default=0.6)
+    terrain.add_argument("--contour-simplify-tolerance-m", type=float, default=0.0)
     terrain.add_argument("--index-contour-every", type=int, default=5)
     terrain.add_argument("--slope-threshold-deg", type=float, default=38.0)
     terrain.add_argument("--min-cliff-length-m", type=float, default=8.0)

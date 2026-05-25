@@ -6,10 +6,10 @@ is based on public Finnish laser scanning data and topographic maps, with
 Karttapullautin as a core generation step.
 
 The current `mml-omap build` pipeline renders MML vector features as ISOM-like
-symbols and derives candidate terrain features from local LiDAR/DEM inputs. MML
-vectors cover roads, paths, water, buildings, cliffs that are already in
-Maastotietokanta, marshes, and open-land proxies. LiDAR/DEM inputs are the
-source of truth for generated contours, candidate cliff lines, and candidate
+symbols and derives terrain candidates from MML laser scanning point clouds.
+MML vectors cover roads, paths, water, buildings, cliffs that are already in
+Maastotietokanta, marshes, and open-land proxies. The point cloud is the source
+of truth for generated contours, candidate cliff lines, and candidate
 `406`/`410` vegetation polygons.
 
 ## Why `tieviiva` Is Weak
@@ -54,28 +54,38 @@ source-data breaks, and edge cuts. From those lines alone the program cannot
 guarantee a globally consistent height field where every point's relative
 height can be inferred from every other point.
 
-The combined build expects local prepared inputs: a ground-elevation XYZ grid
-produced from LiDAR or DEM data, plus LAS/LAZ or text points for vegetation. It
-generates ISOM `101`/`102` contours from the height model, candidate ISOM `202`
-cliffs from steep slope bands, and candidate `406`/`410` vegetation from point
-density.
+The combined build downloads the MML 0.5 p LAZ map sheets covering a slightly
+larger terrain context bbox than the requested map frame. It builds a ground
+grid from classified ground points, generates ISOM `101`/`102` contours from
+that grid, extracts candidate ISOM `202` cliffs from steep slope bands, and
+classifies candidate `406`/`410` vegetation from above-ground point density.
 
 This keeps the height model and point cloud as the source of truth instead of
 trying to repair broken source contour or cliff vectors.
 
-The current implementation does not yet download MML LAZ/DEM products itself.
-Use PDAL, GDAL, LAStools, QGIS, or equivalent tooling to prepare local inputs,
-then feed those files into `mml-omap build`.
-
 ## Algorithms
 
-Contours use a regular ground-elevation XYZ grid. The implementation builds a
+The build expands the map bbox by `--terrain-context-margin-m` before resolving
+MML 1:5000 map sheets with `tm35fin`. It downloads
+`laserkeilausaineisto_05_karttalehti` LAZ data for those sheets and clips the
+final GeoJSON back to the requested paper frame.
+
+Ground modelling uses classified ground points (`classification == 2`) from the
+LAZ files. Points are bucketed onto a regular grid at
+`--ground-cell-size-m`; each grid cell stores the configured ground elevation
+quantile, median by default, so multiple points in the same cell become one
+terrain estimate instead of forcing the surface through every return. Empty
+cells are filled from nearby ground cells with inverse-distance weighting from a
+KD-tree search. If a hole is too large to fill, the build fails instead of
+silently falling back to a coarser elevation product.
+
+Contours use that point-cloud-derived ground grid. The implementation builds a
 2D elevation matrix, then uses `contourpy` to generate isolines at the requested
-contour interval. `contourpy` handles the contour topology across the grid cells
-more robustly than a hand-written marching-squares pass. The generated lines are
-simplified with Douglas-Peucker using `--contour-simplify-tolerance-m`, then
-written as ISOM `101` contours. Every `--index-contour-every` contour is written
-as ISOM `102` index contour.
+contour interval. The intentional simplification is in the ground model:
+multiple returns become one continuous estimated surface, and empty cells are
+interpolated. No extra cartographic line simplification is applied by default.
+Every `--index-contour-every` contour is written as ISOM `102` index contour;
+the others are ISOM `101`.
 
 Cliffs use the same ground-elevation grid. The implementation estimates slope at
 each grid point from central height differences in x/y, converts slope to

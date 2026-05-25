@@ -137,6 +137,10 @@ KOK_degrees = NEK_degrees + NAK_degrees
 
 The formula is approximate and not an official MML/FMI Erantokartta model.
 
+The same model as a rough Finland heatmap:
+
+![Finland NEK, NAK, and KOK heatmap](docs/finland_nek_nak_kok_heatmap.svg)
+
 ## Documentation Map
 
 - [docs/mml-to-isom-mapping.md](docs/mml-to-isom-mapping.md) documents MML

@@ -670,13 +670,13 @@ def convert_gpkg_to_geojson(
     map_frame: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     features: list[dict[str, Any]] = []
+    table_summaries: list[tuple[str, int, int]] = []
     with sqlite3.connect(gpkg_path) as connection:
         connection.row_factory = sqlite3.Row
         for table, geometry_column in gpkg_feature_tables(connection):
             rule = table_rules.get(table)
             if rule is None and not include_unmapped:
                 continue
-            progress(f"Converting table {table}...")
             rows_seen = 0
             rows_kept = 0
             for row in feature_rows(connection, table, geometry_column):
@@ -706,9 +706,20 @@ def convert_gpkg_to_geojson(
                     properties["symbol"] = iof_symbol_number
                 features.append({"type": "Feature", "properties": properties, "geometry": geometry})
                 rows_kept += 1
-                if rows_seen % 10000 == 0:
-                    progress(f"  {table}: scanned {rows_seen} rows, kept {rows_kept} features...")
-            progress(f"  {table}: scanned {rows_seen} rows, kept {rows_kept} features.")
+            table_summaries.append((table, rows_seen, rows_kept))
+    scanned = sum(summary[1] for summary in table_summaries)
+    kept = sum(summary[2] for summary in table_summaries)
+    used_tables = ", ".join(
+        f"{table} {rows_kept}/{rows_seen}"
+        for table, rows_seen, rows_kept in table_summaries
+        if rows_seen or rows_kept
+    )
+    progress(
+        f"Converted {len(table_summaries)} MML vector tables: "
+        f"scanned {scanned} rows, kept {kept} features."
+    )
+    if used_tables:
+        progress(f"Vector table summary: {used_tables}.")
     geojson = {
         "type": "FeatureCollection",
         "name": "mml-omap",
@@ -1503,8 +1514,11 @@ def read_lidar_point_rows(path: Path) -> list[tuple[float, float, float, int | N
 
 def read_lidar_point_rows_many(paths: list[Path]) -> list[tuple[float, float, float, int | None]]:
     rows: list[tuple[float, float, float, int | None]] = []
-    for path in paths:
+    for index, path in enumerate(paths, start=1):
+        progress(f"Reading LAZ/LAS point file {index}/{len(paths)}: {path}...")
+        before = len(rows)
         rows.extend(read_lidar_point_rows(path))
+        progress(f"  read {len(rows) - before} points from {path}.")
     return rows
 
 
@@ -1558,44 +1572,57 @@ def ground_grid_from_lidar_points(
     if not 0.0 <= ground_quantile <= 1.0:
         raise ValueError("--ground-quantile must be between 0 and 1")
     min_x, min_y, max_x, max_y = bbox
-    ground_rows = [
-        (x, y, z)
-        for x, y, z, classification in rows
-        if min_x <= x <= max_x
-        and min_y <= y <= max_y
-        and (classification == 2 or classification is None)
-    ]
-    if not ground_rows:
+    raw = np.asarray(rows, dtype=float)
+    if raw.ndim != 2 or raw.shape[1] < 4:
+        raise ValueError("Point rows must contain x, y, z, classification")
+    ground_mask = (
+        (raw[:, 0] >= min_x)
+        & (raw[:, 0] <= max_x)
+        & (raw[:, 1] >= min_y)
+        & (raw[:, 1] <= max_y)
+        & ((raw[:, 3] == 2) | np.isnan(raw[:, 3]))
+    )
+    ground = raw[ground_mask]
+    if len(ground) == 0:
         raise ValueError("No classified ground points found inside the map frame")
 
     columns = int(math.ceil((max_x - min_x) / cell_size_m)) + 1
     rows_count = int(math.ceil((max_y - min_y) / cell_size_m)) + 1
+    progress(
+        "Building ground elevation model "
+        f"from {len(ground)} ground points on {columns} x {rows_count} grid..."
+    )
     xs = [min_x + column * cell_size_m for column in range(columns)]
     ys = [min_y + row * cell_size_m for row in range(rows_count)]
     grid = np.full((rows_count, columns), np.nan, dtype=float)
     confidence = np.zeros((rows_count, columns), dtype=float)
-    cell_values: dict[tuple[int, int], list[float]] = {}
-    for x, y, z in ground_rows:
-        column = min(max(int(round((x - min_x) / cell_size_m)), 0), columns - 1)
-        row = min(max(int(round((y - min_y) / cell_size_m)), 0), rows_count - 1)
-        cell_values.setdefault((row, column), []).append(z)
-
-    residuals: list[float] = []
-    cell_noise_values: list[float] = []
-    for (row, column), values in cell_values.items():
-        sample = np.asarray(values, dtype=float)
+    column_indices = np.clip(np.rint((ground[:, 0] - min_x) / cell_size_m).astype(int), 0, columns - 1)
+    row_indices = np.clip(np.rint((ground[:, 1] - min_y) / cell_size_m).astype(int), 0, rows_count - 1)
+    flat_cells = row_indices * columns + column_indices
+    order = np.argsort(flat_cells)
+    sorted_cells = flat_cells[order]
+    sorted_z = ground[:, 2][order]
+    unique_cells, first_indexes, counts = np.unique(sorted_cells, return_index=True, return_counts=True)
+    cell_estimates = np.empty(len(unique_cells), dtype=float)
+    cell_noise_values = np.empty(len(unique_cells), dtype=float)
+    residual_chunks: list[Any] = []
+    progress(f"Aggregating {len(unique_cells)} observed ground grid cells...")
+    for index, (start, count) in enumerate(zip(first_indexes, counts)):
+        sample = sorted_z[start : start + count]
         estimate = float(np.quantile(sample, ground_quantile))
-        grid[row, column] = estimate
-        residuals.extend(abs(float(value) - estimate) for value in sample)
-
-    global_noise_m = robust_noise_m(np.asarray(residuals, dtype=float), default=0.15)
-    for (row, column), values in cell_values.items():
-        sample = np.asarray(values, dtype=float)
-        cell_noise_m = robust_noise_m(abs(sample - grid[row, column]), default=global_noise_m)
-        cell_noise_values.append(cell_noise_m)
-        # Confidence is inverse variance of the cell mean. Cap tiny noise values
-        # so dense flat cells do not dominate the whole smoothed surface.
-        confidence[row, column] = len(values) / max(cell_noise_m, 0.05) ** 2
+        cell_estimates[index] = estimate
+        residual = np.abs(sample - estimate)
+        residual_chunks.append(residual)
+    residuals = np.concatenate(residual_chunks) if residual_chunks else np.asarray([], dtype=float)
+    global_noise_m = robust_noise_m(residuals, default=0.15)
+    for index, (cell, start, count) in enumerate(zip(unique_cells, first_indexes, counts)):
+        sample = sorted_z[start : start + count]
+        row = int(cell // columns)
+        column = int(cell % columns)
+        grid[row, column] = cell_estimates[index]
+        cell_noise_m = robust_noise_m(np.abs(sample - cell_estimates[index]), default=global_noise_m)
+        cell_noise_values[index] = cell_noise_m
+        confidence[row, column] = int(count) / max(cell_noise_m, 0.05) ** 2
 
     known_row, known_column = np.where(~np.isnan(grid))
     known_xy = np.column_stack((known_column.astype(float), known_row.astype(float))) * cell_size_m
@@ -1604,6 +1631,7 @@ def ground_grid_from_lidar_points(
     all_row, all_column = np.indices(grid.shape)
     missing = np.isnan(grid)
     if np.any(missing):
+        progress(f"Interpolating {int(np.count_nonzero(missing))} empty ground grid cells...")
         query_xy = np.column_stack((all_column[missing].astype(float), all_row[missing].astype(float))) * cell_size_m
         distances, indexes = nearest_ground_cells(
             known_xy,
@@ -1611,26 +1639,27 @@ def ground_grid_from_lidar_points(
             neighbor_count=min(8, len(known_z)),
             max_distance_m=fill_max_distance_m,
         )
-        filled = []
-        for point_distances, point_indexes in zip(distances, indexes):
-            valid = point_indexes < len(known_z)
-            if not np.any(valid):
-                filled.append(np.nan)
-                continue
-            valid_distances = point_distances[valid]
-            valid_indexes = point_indexes[valid]
-            zero = valid_distances <= 1e-9
-            if np.any(zero):
-                filled.append(float(known_z[valid_indexes[zero][0]]))
-                continue
-            weights = 1.0 / (valid_distances * valid_distances)
-            filled.append(float(np.sum(weights * known_z[valid_indexes]) / np.sum(weights)))
-        grid[missing] = np.asarray(filled)
+        valid = indexes < len(known_z)
+        safe_distances = np.where(valid, distances, np.inf)
+        zero = safe_distances <= 1e-9
+        weights = np.where(valid & ~zero, 1.0 / np.maximum(safe_distances, 1e-12) ** 2, 0.0)
+        weighted_sum = np.sum(weights * np.where(valid, known_z[np.minimum(indexes, len(known_z) - 1)], 0.0), axis=1)
+        weight_sum = np.sum(weights, axis=1)
+        filled = np.divide(weighted_sum, weight_sum, out=np.full(len(query_xy), np.nan), where=weight_sum > 0)
+        zero_rows = np.any(zero, axis=1)
+        if np.any(zero_rows):
+            first_zero = np.argmax(zero[zero_rows], axis=1)
+            filled[zero_rows] = known_z[indexes[zero_rows, first_zero]]
+        grid[missing] = filled
         confidence[missing] = max(float(np.nanmedian(known_confidence)) * 0.10, 1e-6)
     if np.isnan(grid).any():
         raise ValueError("Point cloud has ground gaps too large to build a complete contour grid")
 
     if smoothing_sigma_m > 0:
+        progress(
+            "Smoothing ground model "
+            f"with sigma {smoothing_sigma_m:g} m and noise-weighted confidence..."
+        )
         try:
             from scipy.ndimage import gaussian_filter
         except ImportError as exc:
@@ -1648,19 +1677,24 @@ def ground_grid_from_lidar_points(
     report = {
         "model": "weighted Gaussian-smoothed regular grid from classified ground points",
         "observation_model": "elevation_observation(x,y) = mu(x,y) + epsilon",
-        "ground_point_count": len(ground_rows),
+        "ground_point_count": len(ground),
         "grid_columns": columns,
         "grid_rows": rows_count,
         "grid_cell_size_m": cell_size_m,
-        "observed_cell_count": len(cell_values),
+        "observed_cell_count": len(unique_cells),
         "interpolated_cell_count": int(np.count_nonzero(missing)),
         "ground_quantile": ground_quantile,
         "ground_smoothing_sigma_m": smoothing_sigma_m,
         "fill_max_distance_m": fill_max_distance_m,
         "global_noise_estimate_m": global_noise_m,
-        "median_cell_noise_estimate_m": float(np.median(cell_noise_values)) if cell_noise_values else global_noise_m,
-        "p90_cell_noise_estimate_m": float(np.quantile(cell_noise_values, 0.9)) if cell_noise_values else global_noise_m,
+        "median_cell_noise_estimate_m": float(np.median(cell_noise_values)) if len(cell_noise_values) else global_noise_m,
+        "p90_cell_noise_estimate_m": float(np.quantile(cell_noise_values, 0.9)) if len(cell_noise_values) else global_noise_m,
     }
+    progress(
+        "Ground model ready: "
+        f"global noise {global_noise_m:.3f} m, "
+        f"median cell noise {report['median_cell_noise_estimate_m']:.3f} m."
+    )
     return xs, ys, points, report
 
 

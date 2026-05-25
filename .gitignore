@@ -22,5 +22,6 @@ builds/
 *.png
 *.svg
 !docs/
+!docs/ekp.png
 !docs/*.svg
 !docs/*.geojson

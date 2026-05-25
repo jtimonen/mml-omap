@@ -58,9 +58,10 @@ Current source usage by feature type:
 
 - Contours: read from the MML topographic database GeoPackage table
   `korkeuskayra` and rendered as `contour`. The tool does not currently derive
-  contours directly from laser scanning data or an elevation model. The render
-  layout infers the contour interval from `korkeusarvo` values when available;
-  for example, a 2500-unit step is labelled as `Contours 2.5 m`.
+  contours directly from LAZ files. The render layout infers the contour
+  interval from `korkeusarvo` values when available; for example, a 2500-unit
+  step is labelled as `Contours 2.5 m`. For better contour continuity, use
+  `contours-from-xyz` with a LiDAR/DEM-derived regular XYZ elevation grid.
 - Vegetation: not meaningfully generated yet. Some open or semi-open land-cover
   tables are mapped as open-land proxies: `maatalousmaa` is rendered as dotted
   cultivated/open land, `niitty`, `muuavoinalue`, and `puisto` are rendered as
@@ -68,8 +69,10 @@ Current source usage by feature type:
   `urheilujavirkistysalue` is kept as `recreation_area` in the GeoJSON but is
   not painted by the default renderer because it can describe a broad
   sports/recreation land-use area rather than actual open runnable land.
-  Forest vegetation and runnability need future source mapping or raster
-  analysis.
+  Forest vegetation is not included by default. Pass `--include-forest-mask` to
+  map MML `metsamaankasvillisuus` polygons as a rough green `406` proxy for
+  experiments. Orienteering map style vegetation needs future source mapping or
+  raster analysis.
 - Lakes and bodies of water: read from `jarvi` and `meri`, mapped as `lake`,
   and rendered as a blue area with black edge. Water names are read from
   `paikannimi` when MML includes name points in the extract, and rendered as
@@ -323,26 +326,38 @@ want to override them.
 
 ## Espoon Keskuspuisto Example
 
-This example fetches an approximately 2.05 km x 1.43 km rectangle around
-Mössenkärr in Espoon keskuspuisto. The bbox is in EPSG:3067 meters.
+This example fetches an approximately 2.05 km x 1.43 km rectangle centered on
+the MapAnt location `60.1880680, 24.6967986` in Espoon keskuspuisto. The bbox is
+in EPSG:3067 meters.
+
+All outputs go under `builds/examples/espoo-keskuspuisto/`, which is ignored by
+git and can be deleted as a single directory.
 
 Generate the GeoJSON:
 
 ```sh
-uv run mml-omap generate espoo-keskuspuisto-mossenkarr.geojson --bbox 370867,6674147,372917,6675581
+uv run mml-omap generate builds/examples/espoo-keskuspuisto/mapant-center.geojson --bbox 371255,6673869,373305,6675299 --include-forest-mask --work-dir builds/examples/espoo-keskuspuisto/downloads
 ```
 
 Render PNG, PDF, and a PDF with symbol numbers printed over the features:
 
 ```sh
-uv run mml-omap render espoo-keskuspuisto-mossenkarr.geojson espoo-keskuspuisto-mossenkarr --scale 5000 --map-title "Espoon keskuspuisto - Mössenkärr" --map-maker "Your name"
+uv run mml-omap render builds/examples/espoo-keskuspuisto/mapant-center.geojson builds/examples/espoo-keskuspuisto/mapant-center --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"
 ```
 
 This writes:
 
-- `espoo-keskuspuisto-mossenkarr.png`
-- `espoo-keskuspuisto-mossenkarr.pdf`
-- `espoo-keskuspuisto-mossenkarr-symbols.pdf`
+- `builds/examples/espoo-keskuspuisto/mapant-center.geojson`
+- `builds/examples/espoo-keskuspuisto/mapant-center.png`
+- `builds/examples/espoo-keskuspuisto/mapant-center.pdf`
+- `builds/examples/espoo-keskuspuisto/mapant-center-symbols.pdf`
+
+One-row full example that downloads the MML data, generates GeoJSON, and renders
+the final PDF:
+
+```sh
+uv run mml-omap generate builds/examples/espoo-keskuspuisto/mapant-center.geojson --bbox 371255,6673869,373305,6675299 --include-forest-mask --work-dir builds/examples/espoo-keskuspuisto/downloads && uv run mml-omap render-pdf builds/examples/espoo-keskuspuisto/mapant-center.geojson builds/examples/espoo-keskuspuisto/mapant-center.pdf --scale 5000 --map-title "Espoon keskuspuisto" --map-maker "Your name"
+```
 
 ## Download Only
 
@@ -357,6 +372,26 @@ This command downloads the enclosing MML bbox for the rotated paper frame. Use
 
 ```
 uv run mml-omap convert-gpkg maastotietokanta.gpkg output.geojson --bbox 385396,6672568,389620,6677160
+```
+
+## Generate Contours From A LiDAR/DEM Grid
+
+MML `korkeuskayra` vectors are useful basemap material, but they are not a
+complete height field. They can be fragmented by source production,
+generalization, clipping, and tiling. If you need contours that are generated
+consistently across the paper frame, first create a regular ground-elevation
+XYZ grid from LiDAR/DEM data with PDAL, GDAL, LAStools, or QGIS, then generate
+ISOM contour GeoJSON from that grid:
+
+```sh
+uv run mml-omap contours-from-xyz lidar-ground.xyz contours.geojson --interval-m 2.5 --bbox 371255,6673869,373305,6675299
+```
+
+The XYZ file must contain `x y z` rows in EPSG:3067 meters. The output uses
+ISOM `101` contour features and can be rendered with the normal render commands:
+
+```sh
+uv run mml-omap render-pdf contours.geojson contours.pdf --scale 5000
 ```
 
 ## Render GeoJSON
@@ -420,6 +455,9 @@ The authoritative project mapping table is documented in
 attribute-to-ISOM-code idea as Karttapullautin `vectorconf` files. Credit for
 that mapping-table pattern belongs to Karttapullautin; this project adapts the
 idea to MML GeoPackage tables and `kohdeluokka` values.
+The gap between this vector pipeline and MapAnt-like orienteering map style
+output is documented in
+[docs/orienteering-map-style-gap.md](docs/orienteering-map-style-gap.md).
 
 The built-in renderer uses a local structured ISOM symbol library documented in
 [docs/isom-symbol-library.md](docs/isom-symbol-library.md). The definitions are
@@ -440,6 +478,8 @@ write these names into `properties.symbol`.
 
 - `tieviiva` -> `major_road`, `road`, `small_road`, `path`, or `small_path`
   by `kohdeluokka`
+- `metsamaankasvillisuus` -> `thick_forest` / ISOM `406` only when
+  `--include-forest-mask` is set
 - `korkeuskayra` -> `contour`
 - `jyrkanne` -> `cliff`
 - `virtavesikapea` -> `stream`

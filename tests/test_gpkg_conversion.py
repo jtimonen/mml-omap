@@ -30,6 +30,9 @@ from mml_omap.cli import (
     render_pdf,
     render_svg,
     command_symbols,
+    contour_features_from_xyz_grid,
+    command_contours_from_xyz,
+    table_rules_with_optional_forest_mask,
     validate_orienteering_bbox_size,
 )
 
@@ -75,10 +78,10 @@ class GeoPackageConversionTest(unittest.TestCase):
         feature = geojson["features"][0]
         self.assertEqual(feature["geometry"]["type"], "LineString")
         self.assertEqual(feature["properties"]["source_table"], "tieviiva")
-        self.assertEqual(feature["properties"]["symbol"], "505")
+        self.assertEqual(feature["properties"]["symbol"], "506")
         self.assertEqual(feature["properties"]["object_type"], "line")
-        self.assertEqual(feature["properties"]["iof_symbol_number"], "505")
-        self.assertEqual(feature["properties"]["iof_symbol_name"], "Footpath")
+        self.assertEqual(feature["properties"]["iof_symbol_number"], "506")
+        self.assertEqual(feature["properties"]["iof_symbol_name"], "Small footpath")
 
     def test_convert_gpkg_does_not_emit_non_isom_symbols(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -106,6 +109,25 @@ class GeoPackageConversionTest(unittest.TestCase):
             )
 
         self.assertEqual(geojson["features"], [])
+
+    def test_optional_forest_mask_maps_mml_forest_to_green_proxy(self) -> None:
+        rules = table_rules_with_optional_forest_mask(DEFAULT_TABLE_RULES, include_forest_mask=True)
+
+        object_type, symbol = cli.classify_feature(
+            "metsamaankasvillisuus",
+            {},
+            {"type": "Polygon", "coordinates": []},
+            rules["metsamaankasvillisuus"],
+        )
+
+        self.assertEqual(object_type, "area")
+        self.assertEqual(symbol, "406")
+        self.assertEqual(iof_symbol_metadata(symbol)["iof_symbol_name"], "Vegetation: slow running")
+
+    def test_forest_mask_is_not_enabled_by_default(self) -> None:
+        rules = table_rules_with_optional_forest_mask(DEFAULT_TABLE_RULES, include_forest_mask=False)
+
+        self.assertNotIn("metsamaankasvillisuus", rules)
 
 
 class OrienteeringBoundsTest(unittest.TestCase):
@@ -205,7 +227,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
         )
         self.assertEqual(
             feature_symbol({"properties": {"source_table": "tieviiva", "symbol": "path", "kohdeluokka": 12314}}),
-            "small_road",
+            "road",
         )
         self.assertEqual(
             feature_symbol({"properties": {"source_table": "virtavesikapea", "symbol": "stream", "kohdeluokka": 36312}}),
@@ -402,6 +424,47 @@ class OrienteeringBoundsTest(unittest.TestCase):
         }
 
         self.assertEqual(infer_contour_interval_m(geojson), 2.5)
+
+    def test_lidar_xyz_grid_generates_contour_lines(self) -> None:
+        xs = [0.0, 10.0]
+        ys = [0.0, 10.0]
+        points = {
+            (0.0, 0.0): 0.0,
+            (10.0, 0.0): 10.0,
+            (0.0, 10.0): 0.0,
+            (10.0, 10.0): 10.0,
+        }
+
+        features = contour_features_from_xyz_grid(xs, ys, points, interval_m=5.0)
+
+        self.assertEqual(len(features), 1)
+        self.assertEqual(features[0]["properties"]["symbol"], "101")
+        self.assertEqual(features[0]["properties"]["korkeusarvo"], 5000)
+        self.assertEqual(features[0]["geometry"]["type"], "LineString")
+
+    def test_contours_from_xyz_command_writes_geojson(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "dem.xyz"
+            output_path = Path(directory) / "contours.geojson"
+            input_path.write_text("0 0 0\n10 0 10\n0 10 0\n10 10 10\n", encoding="utf-8")
+
+            exit_code = command_contours_from_xyz(
+                argparse.Namespace(
+                    input=str(input_path),
+                    output=str(output_path),
+                    interval_m=5.0,
+                    min_level=None,
+                    max_level=None,
+                    bbox=None,
+                    magnetic_declination_deg="auto",
+                    magnetic_date=None,
+                )
+            )
+
+            self.assertEqual(exit_code, 0)
+            geojson = cli.read_json(output_path)
+            self.assertEqual(len(geojson["features"]), 1)
+            self.assertEqual(geojson["features"][0]["properties"]["iof_symbol_number"], "101")
 
 
 class EnvFileTest(unittest.TestCase):

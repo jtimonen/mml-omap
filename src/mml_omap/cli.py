@@ -62,15 +62,15 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
             "12122": "major_road",
             "12131": "major_road",
             "12132": "major_road",
-            "12141": "small_road",
-            "12142": "small_road",
-            "12151": "small_road",
-            "12152": "small_road",
+            "12141": "road",
+            "12142": "road",
+            "12151": None,
+            "12152": None,
             # Tracks, paths, footways.
-            "12311": "path",
-            "12312": "path",
-            "12313": "small_road",
-            "12314": "small_road",
+            "12311": "small_path",
+            "12312": "small_path",
+            "12313": "path",
+            "12314": "road",
             "12315": "small_path",
             "12316": "small_path",
             "12317": "small_path",
@@ -500,13 +500,27 @@ def extract_first_gpkg(archive_path: Path, output_dir: Path) -> Path:
 
 def load_table_rules(path: Path | None) -> dict[str, dict[str, Any]]:
     if path is None:
-        return DEFAULT_TABLE_RULES
+        return dict(DEFAULT_TABLE_RULES)
     raw = read_json(path)
     if not isinstance(raw, dict):
         raise ValueError("Mapping file must be a JSON object")
     merged = dict(DEFAULT_TABLE_RULES)
     merged.update(raw)
     return merged
+
+
+def table_rules_with_optional_forest_mask(
+    table_rules: dict[str, dict[str, Any]],
+    *,
+    include_forest_mask: bool,
+) -> dict[str, dict[str, Any]]:
+    rules = dict(table_rules)
+    if include_forest_mask and "metsamaankasvillisuus" not in rules:
+        rules["metsamaankasvillisuus"] = {
+            "object_type": "area",
+            "symbol": "406",
+        }
+    return rules
 
 
 def convert_gpkg_to_geojson(
@@ -999,6 +1013,173 @@ def geojson_map_frame_declination(geojson: dict[str, Any]) -> float | None:
     return None
 
 
+def read_xyz_grid(path: Path) -> tuple[list[float], list[float], dict[tuple[float, float], float]]:
+    points: dict[tuple[float, float], float] = {}
+    xs: set[float] = set()
+    ys: set[float] = set()
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part for part in line.replace(",", " ").split() if part]
+        if len(parts) < 3:
+            raise ValueError(f"Invalid XYZ row at {path}:{line_number}")
+        try:
+            x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
+        except ValueError as exc:
+            if line_number == 1:
+                continue
+            raise ValueError(f"Invalid numeric XYZ row at {path}:{line_number}") from exc
+        xs.add(x)
+        ys.add(y)
+        points[(x, y)] = z
+    if len(xs) < 2 or len(ys) < 2:
+        raise ValueError("XYZ input must contain a regular grid with at least two x and two y values")
+    return sorted(xs), sorted(ys), points
+
+
+def interpolate_contour_point(
+    a: tuple[float, float, float],
+    b: tuple[float, float, float],
+    level: float,
+) -> list[float]:
+    ax, ay, az = a
+    bx, by, bz = b
+    if abs(bz - az) < 1e-12:
+        t = 0.5
+    else:
+        t = (level - az) / (bz - az)
+    t = min(max(t, 0.0), 1.0)
+    return [ax + (bx - ax) * t, ay + (by - ay) * t]
+
+
+def contour_cell_segments(corners: list[tuple[float, float, float]], level: float) -> list[tuple[list[float], list[float]]]:
+    edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
+    intersections = []
+    for start, end in edges:
+        a = corners[start]
+        b = corners[end]
+        da = a[2] - level
+        db = b[2] - level
+        if da == 0.0 and db == 0.0:
+            continue
+        if da == 0.0:
+            intersections.append([a[0], a[1]])
+        elif db == 0.0:
+            intersections.append([b[0], b[1]])
+        elif (da < 0.0 < db) or (db < 0.0 < da):
+            intersections.append(interpolate_contour_point(a, b, level))
+    unique = []
+    seen = set()
+    for point in intersections:
+        key = (round(point[0], 6), round(point[1], 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(point)
+    if len(unique) == 2:
+        return [(unique[0], unique[1])]
+    if len(unique) == 4:
+        return [(unique[0], unique[1]), (unique[2], unique[3])]
+    return []
+
+
+def stitch_segments(segments: list[tuple[list[float], list[float]]]) -> list[list[list[float]]]:
+    lines: list[list[list[float]]] = []
+    endpoint_to_line: dict[tuple[int, int], int] = {}
+
+    def key(point: list[float]) -> tuple[int, int]:
+        return (round(point[0] * 1000), round(point[1] * 1000))
+
+    for start, end in segments:
+        start_key = key(start)
+        end_key = key(end)
+        start_line_index = endpoint_to_line.get(start_key)
+        end_line_index = endpoint_to_line.get(end_key)
+        if start_line_index is None and end_line_index is None:
+            endpoint_to_line[start_key] = len(lines)
+            endpoint_to_line[end_key] = len(lines)
+            lines.append([start, end])
+            continue
+        if start_line_index is not None and end_line_index is None:
+            line = lines[start_line_index]
+            endpoint_to_line.pop(key(line[0]), None)
+            endpoint_to_line.pop(key(line[-1]), None)
+            if key(line[0]) == start_key:
+                line.insert(0, end)
+            else:
+                line.append(end)
+            endpoint_to_line[key(line[0])] = start_line_index
+            endpoint_to_line[key(line[-1])] = start_line_index
+            continue
+        if end_line_index is not None and start_line_index is None:
+            line = lines[end_line_index]
+            endpoint_to_line.pop(key(line[0]), None)
+            endpoint_to_line.pop(key(line[-1]), None)
+            if key(line[0]) == end_key:
+                line.insert(0, start)
+            else:
+                line.append(start)
+            endpoint_to_line[key(line[0])] = end_line_index
+            endpoint_to_line[key(line[-1])] = end_line_index
+            continue
+    return [line for line in lines if len(line) >= 2]
+
+
+def contour_features_from_xyz_grid(
+    xs: list[float],
+    ys: list[float],
+    points: dict[tuple[float, float], float],
+    *,
+    interval_m: float,
+    min_level: float | None = None,
+    max_level: float | None = None,
+) -> list[dict[str, Any]]:
+    if interval_m <= 0:
+        raise ValueError("--interval-m must be greater than zero")
+    elevations = list(points.values())
+    min_elevation = min_level if min_level is not None else min(elevations)
+    max_elevation = max_level if max_level is not None else max(elevations)
+    start = math.ceil(min_elevation / interval_m) * interval_m
+    end = math.floor(max_elevation / interval_m) * interval_m
+    if start <= min_elevation:
+        start += interval_m
+    if end >= max_elevation:
+        end -= interval_m
+    features: list[dict[str, Any]] = []
+    level = start
+    while level <= end + interval_m * 0.001:
+        segments: list[tuple[list[float], list[float]]] = []
+        for x0, x1 in zip(xs, xs[1:]):
+            for y0, y1 in zip(ys, ys[1:]):
+                required = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                if any(point not in points for point in required):
+                    continue
+                corners = [(x, y, points[(x, y)]) for x, y in required]
+                cell_values = [corner[2] for corner in corners]
+                if level < min(cell_values) or level > max(cell_values):
+                    continue
+                segments.extend(contour_cell_segments(corners, level))
+        for line in stitch_segments(segments):
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "source": "LiDAR-derived elevation grid",
+                        "source_table": "lidar_xyz_grid",
+                        "object_type": "line",
+                        "symbol": "101",
+                        "iof_symbol_number": "101",
+                        "iof_symbol_name": "Contour",
+                        "korkeusarvo": int(round(level * 1000)),
+                    },
+                    "geometry": {"type": "LineString", "coordinates": line},
+                }
+            )
+        level += interval_m
+    return features
+
+
 class RenderTransform:
     def __init__(
         self,
@@ -1050,11 +1231,13 @@ def feature_symbol(feature: dict[str, Any]) -> str:
         kohdeluokka = str(properties.get("kohdeluokka", ""))
         if kohdeluokka in {"12111", "12112", "12121", "12122", "12131", "12132"}:
             return "major_road"
-        if kohdeluokka in {"12141", "12142", "12151", "12152", "12313", "12314"}:
+        if kohdeluokka in {"12141", "12142", "12314"}:
+            return "road"
+        if kohdeluokka in {"12316"}:
             return "small_road"
-        if kohdeluokka in {"12311", "12312"}:
+        if kohdeluokka in {"12313"}:
             return "path"
-        if kohdeluokka in {"12314", "12315", "12316", "12317"}:
+        if kohdeluokka in {"12311", "12312", "12315", "12317"}:
             return "small_path"
     if properties.get("source_table") == "virtavesikapea" and str(properties.get("kohdeluokka", "")) == "36312":
         return "wide_stream"
@@ -2230,7 +2413,10 @@ def command_convert_gpkg(args: argparse.Namespace) -> int:
     )
     bbox = enclosing_grid_bbox(paper_bbox, magnetic_declination_deg) if paper_bbox else None
     clip_frame = OrientedFrame(paper_bbox, magnetic_declination_deg) if paper_bbox else None
-    rules = load_table_rules(Path(args.mapping) if args.mapping else None)
+    rules = table_rules_with_optional_forest_mask(
+        load_table_rules(Path(args.mapping) if args.mapping else None),
+        include_forest_mask=args.include_forest_mask,
+    )
     geojson = convert_gpkg_to_geojson(
         Path(args.input),
         bbox=bbox,
@@ -2267,7 +2453,10 @@ def command_generate(args: argparse.Namespace) -> int:
     command_download(download_args_for_generate(args, archive_path))
     progress(f"Extracting GeoPackage from {archive_path}...")
     gpkg_path = extract_first_gpkg(archive_path, work_dir / output.stem)
-    rules = load_table_rules(Path(args.mapping) if args.mapping else None)
+    rules = table_rules_with_optional_forest_mask(
+        load_table_rules(Path(args.mapping) if args.mapping else None),
+        include_forest_mask=args.include_forest_mask,
+    )
     paper_bbox = parse_orienteering_bbox(args.bbox)
     magnetic_date = parse_date(args.magnetic_date)
     magnetic_declination_deg = resolve_magnetic_declination_deg(
@@ -2290,6 +2479,41 @@ def command_generate(args: argparse.Namespace) -> int:
     progress(f"Writing GeoJSON to {output}...")
     write_json(output, geojson)
     print(f"Wrote {len(geojson['features'])} features from {gpkg_path}.")
+    return 0
+
+
+def command_contours_from_xyz(args: argparse.Namespace) -> int:
+    xs, ys, points = read_xyz_grid(Path(args.input))
+    features = contour_features_from_xyz_grid(
+        xs,
+        ys,
+        points,
+        interval_m=args.interval_m,
+        min_level=args.min_level,
+        max_level=args.max_level,
+    )
+    geojson: dict[str, Any] = {
+        "type": "FeatureCollection",
+        "name": "mml-omap-lidar-contours",
+        "crs": {"type": "name", "properties": {"name": "EPSG:3067"}},
+        "features": features,
+    }
+    if args.bbox:
+        bbox = parse_orienteering_bbox(args.bbox)
+        magnetic_date = parse_date(args.magnetic_date)
+        magnetic_declination_deg = resolve_magnetic_declination_deg(
+            args.magnetic_declination_deg,
+            bbox=bbox,
+            magnetic_date=magnetic_date.isoformat(),
+        )
+        geojson = clip_geojson_to_frame(geojson, OrientedFrame(bbox, magnetic_declination_deg))
+        geojson["map_frame"] = {
+            "bbox": bbox,
+            "magnetic_declination_deg": magnetic_declination_deg,
+            "magnetic_date": magnetic_date.isoformat(),
+        }
+    write_json(Path(args.output), geojson)
+    print(f"Wrote {len(geojson['features'])} LiDAR-derived contour features.")
     return 0
 
 
@@ -2465,6 +2689,11 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     convert.add_argument("--mapping", help="JSON table mapping overrides")
     convert.add_argument("--include-unmapped", action="store_true")
+    convert.add_argument(
+        "--include-forest-mask",
+        action="store_true",
+        help="Map MML metsamaankasvillisuus polygons to ISOM 406 as a rough green forest proxy.",
+    )
     convert.set_defaults(func=command_convert_gpkg)
 
     generate = subparsers.add_parser(
@@ -2484,7 +2713,30 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--work-dir", default="builds/mml_downloads")
     generate.add_argument("--mapping", help="JSON table mapping overrides")
     generate.add_argument("--include-unmapped", action="store_true")
+    generate.add_argument(
+        "--include-forest-mask",
+        action="store_true",
+        help="Map MML metsamaankasvillisuus polygons to ISOM 406 as a rough green forest proxy.",
+    )
     generate.set_defaults(func=command_generate)
+
+    contours = subparsers.add_parser(
+        "contours-from-xyz",
+        help="Create ISOM contour GeoJSON from a LiDAR/DEM-derived regular XYZ elevation grid.",
+    )
+    contours.add_argument("input", help="Whitespace- or comma-separated XYZ grid in EPSG:3067 meters.")
+    contours.add_argument("output")
+    contours.add_argument("--interval-m", type=float, default=2.5, help="Contour interval in meters.")
+    contours.add_argument("--min-level", type=float, help="Optional lowest contour elevation in meters.")
+    contours.add_argument("--max-level", type=float, help="Optional highest contour elevation in meters.")
+    contours.add_argument("--bbox", help="Optional min_x,min_y,max_x,max_y clip in EPSG:3067 meters")
+    contours.add_argument(
+        "--magnetic-declination-deg",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK. Used when --bbox is set.",
+    )
+    contours.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
+    contours.set_defaults(func=command_contours_from_xyz)
 
     common_render = argparse.ArgumentParser(add_help=False)
     common_render.add_argument("input", help="Input GeoJSON")

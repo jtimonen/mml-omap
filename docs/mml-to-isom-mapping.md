@@ -56,15 +56,31 @@ Features without an ISOM symbol assignment are skipped by default. With
 | `muuavoinalue` | all | `401` | Open land | Open-land proxy. |
 | `puisto` | all | `401` | Open land | Open-land proxy; may be wrong for wooded parks. |
 | `tieviiva` | `12111`, `12112`, `12121`, `12122`, `12131`, `12132` | `502` | Wide road | Mapped as wide road with black edges and brown infill. |
-| `tieviiva` | `12141`, `12142`, `12151`, `12152` | `504` | Vehicle track | Maintained/smaller road proxy. |
-| `tieviiva` | `12313`, `12314` | `504` | Vehicle track | Chosen because these often render as track-like lines in forest areas. |
-| `tieviiva` | `12311`, `12312` | `505` | Footpath | Runnable path/track proxy. |
-| `tieviiva` | `12315`, `12316`, `12317` | `506` | Small footpath | Smaller or less prominent path proxy. |
+| `tieviiva` | `12141`, `12142` | `503` | Road | Small driveable road proxy. |
+| `tieviiva` | `12151`, `12152` | none | none | Ferry/lossi transport lines are not rendered as terrain roads. |
+| `tieviiva` | `12314` | `503` | Road | MML walking/cycle way, usually road-like or paved in map-reading terms. |
+| `tieviiva` | `12316` | `504` | Vehicle track | MML driving path / track proxy. |
+| `tieviiva` | `12313` | `505` | Footpath | MML path. |
+| `tieviiva` | `12311`, `12312` | `506` | Small footpath | Legacy/seasonal path-like proxy; `12312` is winter road and may not be visible in summer. |
+| `tieviiva` | `12315`, `12317` | `506` | Small footpath | Smaller or less prominent path proxy. |
 | `rautatie` | all | `509` | Railway | Railway line. |
 | `aita` | all | `516` | Fence | Passable/crossable fence by default. Impassable fence is not inferred yet. |
 | `rakennus` | all | `521` | Building | Building polygon. |
 | `rakennusreunaviiva` | all | `521` | Building | Building outline linework. |
 | `taajaanrakennettualue` | all | `520` | Area that shall not be entered | Broad proxy for private/built-up area; not field-checked. |
+
+## Optional Forest Mask
+
+`--include-forest-mask` adds `metsamaankasvillisuus` polygons as ISOM `406`
+(`Vegetation: slow running`). This is intentionally opt-in. The MML forest
+polygon says that the area is forested; it does not measure orienteering
+runnability, visibility, undergrowth, or passability. Treat it as a visual
+green mask for experiments and background-map comparison, not as a
+field-checked ISOM vegetation classification.
+
+Orienteering map style green needs laser scanning or another vegetation-density
+source with tuned classification heuristics, not this single vector land-cover
+class.
 
 ## Explicitly Not Emitted By Default
 

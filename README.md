@@ -106,7 +106,7 @@ source downloads.
 
 ## Puijo Example
 
-This 1:10000 example is around Puijon torni and fits on A4 portrait. The bbox
+This 1:10000 example is around Puijon torni. The bbox
 is `532615,6974711,534029,6976689` in EPSG:3067 meters.
 
 ```sh

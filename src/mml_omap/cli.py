@@ -130,7 +130,6 @@ DEFAULT_GREEN_FIGHT_RATIO = 1.13
 DEFAULT_GREEN_MIN_HITS = 8
 DEFAULT_GREEN_FIGHT_MIN_HITS = 24
 DEFAULT_GREEN_MIN_REGION_AREA_M2 = 200.0
-DEFAULT_CONTOUR_SMOOTHING_ITERATIONS = 1
 
 
 def read_json(path: Path) -> Any:
@@ -1320,9 +1319,7 @@ def contour_features_from_xyz_grid(
     interval_m: float,
     min_level: float | None = None,
     max_level: float | None = None,
-    simplify_tolerance_m: float = 0.0,
     index_contour_every: int = 5,
-    smoothing_iterations: int = DEFAULT_CONTOUR_SMOOTHING_ITERATIONS,
 ) -> list[dict[str, Any]]:
     import contourpy
     import numpy as np
@@ -1359,8 +1356,6 @@ def contour_features_from_xyz_grid(
         render_symbol, iof_number, iof_name = contour_symbol_for_level_index(level_index, index_contour_every)
         for contour_line in generator.lines(level):
             line = [[float(point[0]), float(point[1])] for point in contour_line]
-            line = simplify_line(line, simplify_tolerance_m)
-            line = smooth_line(line, smoothing_iterations)
             if len(line) < 2:
                 continue
             features.append(
@@ -1388,56 +1383,6 @@ def contour_symbol_for_level_index(level_index: int, index_contour_every: int) -
     if index_contour_every > 0 and level_index % index_contour_every == 0:
         return "index_contour", "102", "Index contour"
     return "contour", "101", "Contour"
-
-
-def simplify_line(line: list[list[float]], tolerance: float) -> list[list[float]]:
-    if tolerance <= 0 or len(line) <= 2:
-        return line
-    return douglas_peucker(line, tolerance)
-
-
-def smooth_line(line: list[list[float]], iterations: int) -> list[list[float]]:
-    if iterations <= 0 or len(line) <= 2:
-        return line
-    smoothed = line
-    for _iteration in range(iterations):
-        next_line = [smoothed[0]]
-        for start, end in zip(smoothed, smoothed[1:]):
-            next_line.append([start[0] * 0.75 + end[0] * 0.25, start[1] * 0.75 + end[1] * 0.25])
-            next_line.append([start[0] * 0.25 + end[0] * 0.75, start[1] * 0.25 + end[1] * 0.75])
-        next_line.append(smoothed[-1])
-        smoothed = next_line
-    return smoothed
-
-
-def douglas_peucker(points: list[list[float]], tolerance: float) -> list[list[float]]:
-    if len(points) <= 2:
-        return points
-    start = points[0]
-    end = points[-1]
-    max_distance = -1.0
-    max_index = 0
-    for index, point in enumerate(points[1:-1], start=1):
-        distance = point_line_distance(point, start, end)
-        if distance > max_distance:
-            max_distance = distance
-            max_index = index
-    if max_distance <= tolerance:
-        return [start, end]
-    left = douglas_peucker(points[: max_index + 1], tolerance)
-    right = douglas_peucker(points[max_index:], tolerance)
-    return left[:-1] + right
-
-
-def point_line_distance(point: list[float], start: list[float], end: list[float]) -> float:
-    px, py = point
-    sx, sy = start
-    ex, ey = end
-    dx = ex - sx
-    dy = ey - sy
-    if abs(dx) < 1e-12 and abs(dy) < 1e-12:
-        return math.hypot(px - sx, py - sy)
-    return abs(dy * px - dx * py + ex * sy - ey * sx) / math.hypot(dx, dy)
 
 
 def grid_spacing(values: list[float]) -> float:
@@ -2593,6 +2538,76 @@ def draw_line(
             y0 += sy
 
 
+def dash_pattern_px(dasharray: Any, px_per_mm: float) -> list[float]:
+    if not dasharray:
+        return []
+    values = [max(float(value) * px_per_mm, 0.0) for value in str(dasharray).split()]
+    values = [value for value in values if value > 0.0]
+    if len(values) % 2 == 1:
+        values = values * 2
+    return values
+
+
+def dashed_polyline_segments(
+    points: list[tuple[float, float]],
+    dash_pattern: list[float],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    if len(points) < 2:
+        return []
+    if not dash_pattern:
+        return [(start, end) for start, end in zip(points, points[1:])]
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    pattern_index = 0
+    pattern_remaining = dash_pattern[0]
+    drawing = True
+    for start, end in zip(points, points[1:]):
+        sx, sy = start
+        ex, ey = end
+        dx = ex - sx
+        dy = ey - sy
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            continue
+        consumed = 0.0
+        while consumed < length - 1e-9:
+            step = min(pattern_remaining, length - consumed)
+            t0 = consumed / length
+            t1 = (consumed + step) / length
+            if drawing:
+                segments.append(((sx + dx * t0, sy + dy * t0), (sx + dx * t1, sy + dy * t1)))
+            consumed += step
+            pattern_remaining -= step
+            if pattern_remaining <= 1e-9:
+                pattern_index = (pattern_index + 1) % len(dash_pattern)
+                pattern_remaining = dash_pattern[pattern_index]
+                drawing = pattern_index % 2 == 0
+    return segments
+
+
+def draw_polyline_with_optional_dash(
+    canvas: bytearray,
+    width: int,
+    height: int,
+    points: list[tuple[int, int]],
+    color: tuple[int, int, int],
+    stroke_px: int,
+    dasharray: Any,
+    px_per_mm: float,
+) -> None:
+    dash_pattern = dash_pattern_px(dasharray, px_per_mm)
+    float_points = [(float(x), float(y)) for x, y in points]
+    for start, end in dashed_polyline_segments(float_points, dash_pattern):
+        draw_line(
+            canvas,
+            width,
+            height,
+            (int(round(start[0])), int(round(start[1]))),
+            (int(round(end[0])), int(round(end[1]))),
+            color,
+            stroke_px,
+        )
+
+
 def point_in_polygon(x: float, y: float, ring: list[tuple[int, int]]) -> bool:
     inside = False
     j = len(ring) - 1
@@ -2749,8 +2764,14 @@ def render_lidar_height_png(
         raise ValueError("LiDAR diagnostic bbox must have positive width and height")
     scale = min(pixels_per_m, max_side_px / width_m, max_side_px / height_m)
     scale = max(scale, 1e-6)
-    width = max(1, int(math.ceil(width_m * scale)) + 1)
-    height = max(1, int(math.ceil(height_m * scale)) + 1)
+    plot_width = max(1, int(math.ceil(width_m * scale)) + 1)
+    plot_height = max(1, int(math.ceil(height_m * scale)) + 1)
+    margin_left = 72
+    margin_right = 112
+    margin_top = 52
+    margin_bottom = 72
+    width = plot_width + margin_left + margin_right
+    height = plot_height + margin_top + margin_bottom
     image = np.full((height, width, 4), 255, dtype=np.uint8)
 
     raw = np.asarray(rows, dtype=float)
@@ -2777,27 +2798,64 @@ def render_lidar_height_png(
             z_max = z_min + 1.0
         normalized = (z - z_min) / (z_max - z_min)
         colors = viridis_rgb_array(normalized)
-        x = np.clip(np.rint((points[:, 0] - min_x) * scale).astype(int), 0, width - 1)
-        y = np.clip(np.rint((max_y - points[:, 1]) * scale).astype(int), 0, height - 1)
+        x = margin_left + np.clip(np.rint((points[:, 0] - min_x) * scale).astype(int), 0, plot_width - 1)
+        y = margin_top + np.clip(np.rint((max_y - points[:, 1]) * scale).astype(int), 0, plot_height - 1)
         image[y, x, 0:3] = colors
         image[y, x, 3] = 255
     else:
         z_min = 0.0
         z_max = 0.0
 
-    pixels = bytearray(image.reshape(height * width * 4).tobytes())
-    write_png(output_path, width, height, pixels)
+    image[margin_top, margin_left:margin_left + plot_width, 0:3] = 0
+    image[margin_top + plot_height - 1, margin_left:margin_left + plot_width, 0:3] = 0
+    image[margin_top:margin_top + plot_height, margin_left, 0:3] = 0
+    image[margin_top:margin_top + plot_height, margin_left + plot_width - 1, 0:3] = 0
+
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        pixels = bytearray(image.reshape(height * width * 4).tobytes())
+        write_png(output_path, width, height, pixels)
+    else:
+        pil_image = Image.fromarray(image, mode="RGBA")
+        draw = ImageDraw.Draw(pil_image)
+        title = "LiDAR point heights"
+        footer = f"mml-omap {__version__} | EPSG:3067 | {int(len(points))} points"
+        draw.text((margin_left, 14), title, fill=(0, 0, 0, 255))
+        draw.text((margin_left, height - 34), footer, fill=(0, 0, 0, 255))
+        draw.text((margin_left, height - 18), f"Height colors: {z_min:.1f} m to {z_max:.1f} m (1st-99th percentile, clamped)", fill=(0, 0, 0, 255))
+        bar_x0 = margin_left + plot_width + 28
+        bar_y0 = margin_top
+        bar_height = plot_height
+        bar_width = 18
+        for offset in range(bar_height):
+            value = 1.0 - offset / max(bar_height - 1, 1)
+            color = tuple(int(channel) for channel in viridis_rgb_array(np.asarray([value], dtype=float))[0])
+            draw.line([(bar_x0, bar_y0 + offset), (bar_x0 + bar_width, bar_y0 + offset)], fill=(*color, 255))
+        draw.rectangle((bar_x0, bar_y0, bar_x0 + bar_width, bar_y0 + bar_height - 1), outline=(0, 0, 0, 255))
+        draw.text((bar_x0 + bar_width + 6, bar_y0), f"{z_max:.1f} m", fill=(0, 0, 0, 255))
+        draw.text((bar_x0 + bar_width + 6, bar_y0 + bar_height - 12), f"{z_min:.1f} m", fill=(0, 0, 0, 255))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pil_image.save(output_path)
     report = {
         "path": str(output_path),
         "bbox": bbox,
         "width_px": width,
         "height_px": height,
+        "plot_width_px": plot_width,
+        "plot_height_px": plot_height,
+        "margin_left_px": margin_left,
+        "margin_right_px": margin_right,
+        "margin_top_px": margin_top,
+        "margin_bottom_px": margin_bottom,
         "pixels_per_m": scale,
         "point_count": int(len(points)),
         "height_color_ramp": "viridis",
         "height_color_min_m": z_min,
         "height_color_max_m": z_max,
         "height_color_range": "1st to 99th percentile, clamped",
+        "software": "mml-omap",
+        "software_version": __version__,
     }
     progress(
         "Wrote LiDAR point height PNG "
@@ -2888,7 +2946,9 @@ def render_png_with_pillow(
                     if not layer_stroke:
                         continue
                     layer_px = max(1, int(round(float(layer.get("stroke_width_mm", 0.18)) * px_per_mm)))
-                    draw.line(points, fill=layer_stroke, width=layer_px, joint="curve")
+                    dash_pattern = dash_pattern_px(layer.get("dasharray"), px_per_mm)
+                    for start, end in dashed_polyline_segments(points, dash_pattern):
+                        draw.line([start, end], fill=layer_stroke, width=layer_px)
             elif part["type"] == "Point":
                 if feature_label_text(feature):
                     continue
@@ -2982,8 +3042,16 @@ def render_png(
                     if not layer_stroke:
                         continue
                     layer_px = max(1, int(round(float(layer.get("stroke_width_mm", 0.18)) * px_per_mm)))
-                    for a, b in zip(points, points[1:]):
-                        draw_line(canvas, width, height, a, b, layer_stroke, layer_px)
+                    draw_polyline_with_optional_dash(
+                        canvas,
+                        width,
+                        height,
+                        points,
+                        layer_stroke,
+                        layer_px,
+                        layer.get("dasharray"),
+                        px_per_mm,
+                    )
             elif part["type"] == "Point":
                 if feature_label_text(feature):
                     continue
@@ -3579,7 +3647,6 @@ def combined_map_from_source_data(source_data: dict[str, Any], args: argparse.Na
         ys,
         elevation_points,
         interval_m=interval_m,
-        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.0),
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
     cliff_features = cliff_features_from_xyz_grid(
@@ -3733,7 +3800,6 @@ def command_ekp(args: argparse.Namespace) -> int:
         map_title="Espoon keskuspuisto",
         map_maker="mml-omap",
         interval_m=2.5,
-        contour_simplify_tolerance_m=0.35,
         index_contour_every=5,
         ground_cell_size_m=1.0,
         ground_quantile=0.5,
@@ -3779,7 +3845,6 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
         map_title="Kotka-Jukola harjoituskieltoalue",
         map_maker="mml-omap",
         interval_m=2.5,
-        contour_simplify_tolerance_m=0.35,
         index_contour_every=5,
         ground_cell_size_m=1.0,
         ground_quantile=0.5,
@@ -3822,7 +3887,6 @@ def command_contours_from_xyz(args: argparse.Namespace) -> int:
         interval_m=args.interval_m,
         min_level=args.min_level,
         max_level=args.max_level,
-        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.0),
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
     geojson: dict[str, Any] = {
@@ -3911,7 +3975,6 @@ def command_terrain_from_lidar(args: argparse.Namespace) -> int:
         ys,
         points,
         interval_m=args.interval_m,
-        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.0),
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
     cliff_features = cliff_features_from_xyz_grid(
@@ -4140,7 +4203,6 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--map-title", help="Title text printed in SVG/PDF layout metadata.")
     build.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG/PDF layout metadata.")
     build.add_argument("--interval-m", type=float, default=2.5)
-    build.add_argument("--contour-simplify-tolerance-m", type=float, default=0.35)
     build.add_argument("--index-contour-every", type=int, default=5)
     build.add_argument("--ground-cell-size-m", type=float, default=1.0)
     build.add_argument("--ground-quantile", type=float, default=0.5)
@@ -4240,7 +4302,6 @@ def build_parser() -> argparse.ArgumentParser:
     contours.add_argument("--interval-m", type=float, default=2.5, help="Contour interval in meters.")
     contours.add_argument("--min-level", type=float, help="Optional lowest contour elevation in meters.")
     contours.add_argument("--max-level", type=float, help="Optional highest contour elevation in meters.")
-    contours.add_argument("--contour-simplify-tolerance-m", type=float, default=0.0)
     contours.add_argument("--index-contour-every", type=int, default=5)
     contours.add_argument("--bbox", help="Optional min_x,min_y,max_x,max_y clip in EPSG:3067 meters")
     contours.add_argument(
@@ -4288,7 +4349,6 @@ def build_parser() -> argparse.ArgumentParser:
     terrain.add_argument("--points", help="Optional LAS/LAZ or text rows for vegetation: x y z [classification].")
     terrain.add_argument("output")
     terrain.add_argument("--interval-m", type=float, default=2.5)
-    terrain.add_argument("--contour-simplify-tolerance-m", type=float, default=0.0)
     terrain.add_argument("--index-contour-every", type=int, default=5)
     terrain.add_argument("--slope-threshold-deg", type=float, default=38.0)
     terrain.add_argument("--min-cliff-length-m", type=float, default=8.0)

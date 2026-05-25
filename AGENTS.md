@@ -18,6 +18,8 @@
     not hardcode a separate version string.
   - Before committing or releasing behavior, CLI, output, dependency, or public
     API changes, bump `pyproject.toml` and update `CHANGELOG.md`.
+  - Whenever a new version is made, add or update the matching section in
+    `CHANGELOG.md`.
 - Do not keep backwards-compatibility shims, duplicate old workflows, fallback
   code paths, or dead code unless the user explicitly asks for compatibility.
   Prefer one current path that uses the best available combined data sources,

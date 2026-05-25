@@ -14,6 +14,45 @@ The primary build path uses:
 
 MML source contour vectors are not used by the primary build path.
 
+## LiDAR Source Technology
+
+The build uses MML airborne LiDAR, also called airborne laser scanning. In this
+measurement technology, an aircraft-mounted laser scanner emits short laser
+pulses toward the ground. The scanner measures the time it takes for reflected
+energy to return, and the aircraft position and attitude are tracked with
+GNSS/IMU systems. Those measurements are combined into georeferenced 3D points
+with x/y/z coordinates.
+
+A single laser pulse can produce multiple returns. In forest, early returns may
+come from treetops or branches, while later returns may come from lower
+vegetation or the ground if the pulse penetrates the canopy. The delivered LAZ
+file is therefore a point cloud of individual measured returns, not a raster
+image and not a finished terrain model.
+
+The MML `0.5 p` product is distributed as LAS/LAZ point data and is thinned
+from MML's denser `5 p` national laser scanning data without changing
+individual point quality attributes. MML describes the data as automatically
+classified point clouds intended for height-model and forest-interpretation
+use, with point classes such as unclassified points and ground points.
+
+The program does not download separate scans for ground height and vegetation.
+Both come from the same LAZ point rows:
+
+- Ground height uses classified ground points, LAS class `2`, to estimate the
+  continuous terrain surface `mu(x,y)`.
+- Vegetation/runnability uses point heights relative to that local ground
+  surface. It compares low green-band hits to near-ground hits with fixed
+  thresholds and filters out isolated small regions.
+
+This means vegetation quality depends on scan season, leaf-on/leaf-off
+conditions, point density, classification quality, and how many returns
+penetrate through canopy to the lower vegetation and ground.
+
+References:
+
+- https://www.maanmittauslaitos.fi/node/13294
+- https://www.maanmittauslaitos.fi/laserkeilaus-ja-ilmakuvaus
+
 ## Data Fetch
 
 The build expands the requested map frame by `--terrain-context-margin-m` before
@@ -32,9 +71,11 @@ generated feature counts.
 
 Each source-data build also writes one `*-lidar-points.png` diagnostic image of
 the point cloud inside the terrain context bbox. Every observed point is plotted
-at its map position and colored by height with the viridis color ramp. All
-terrain reports generated from the same source data reference that same image
-path, pixel size, point count, and height range.
+at its map position and colored by height with the viridis color ramp. The image
+has margins with a title, the generating `mml-omap` version, point count, and a
+height color scale showing the elevation range used for the ramp. All terrain
+reports generated from the same source data reference that same image path,
+pixel size, point count, software version, and height range.
 
 ## Ground Model
 
@@ -74,11 +115,13 @@ Contours use the point-cloud-derived ground grid. The implementation builds a
 2D elevation matrix and uses `contourpy` to generate isolines at the requested
 contour interval.
 
-The intentional simplification is in the ground model: multiple returns become
-one continuous estimated surface, and empty cells are interpolated. No extra
-cartographic line simplification is applied by default. Every
-`--index-contour-every` contour is written as ISOM `102` index contour; the
-others are ISOM `101`.
+The intentional simplification is only in the mathematical ground model:
+multiple returns become one continuous estimated surface, empty cells are
+interpolated, and the surface is noise-weighted and smoothed before contour
+extraction. The generated contour geometry is taken directly from that
+estimated surface. No post-contour geometry smoothing or line simplification is
+applied. Every `--index-contour-every` contour is written as ISOM `102` index
+contour; the others are ISOM `101`.
 
 ## Cliffs
 

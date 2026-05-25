@@ -13,6 +13,7 @@ from mml_omap.cli import (
     OrientedFrame,
     RenderTransform,
     choose_standard_paper_size,
+    dashed_polyline_segments,
     clip_geometry_to_frame,
     convert_gpkg_to_geojson,
     download_args_for_generate,
@@ -38,7 +39,6 @@ from mml_omap.cli import (
     cliff_features_from_xyz_grid,
     ground_grid_from_lidar_points,
     lidar_vegetation_features,
-    smooth_line,
     merge_geojson_documents,
     extract_laser_paths,
     should_render_point_symbol,
@@ -176,6 +176,17 @@ class OrienteeringBoundsTest(unittest.TestCase):
     def test_standard_paper_size_rejects_maps_larger_than_a3(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not fit"):
             choose_standard_paper_size(430.0, 100.0, 5.0)
+
+    def test_dashed_polyline_segments_preserve_gaps(self) -> None:
+        segments = dashed_polyline_segments([(0.0, 0.0), (10.0, 0.0)], [3.0, 2.0])
+
+        self.assertEqual(
+            segments,
+            [
+                ((0.0, 0.0), (3.0, 0.0)),
+                ((5.0, 0.0), (8.0, 0.0)),
+            ],
+        )
 
     def test_a3_15000_bbox_limit_accepts_portrait_or_landscape(self) -> None:
         validate_orienteering_bbox_size([0, 0, 6300, 4455])
@@ -568,15 +579,6 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertEqual(features, [])
 
-    def test_smooth_line_adds_intermediate_points(self) -> None:
-        line = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]
-
-        smoothed = smooth_line(line, 1)
-
-        self.assertGreater(len(smoothed), len(line))
-        self.assertEqual(smoothed[0], line[0])
-        self.assertEqual(smoothed[-1], line[-1])
-
     def test_ground_grid_reports_noise_estimates(self) -> None:
         rows = [
             (0.0, 0.0, 10.0, 2),
@@ -613,6 +615,9 @@ class OrienteeringBoundsTest(unittest.TestCase):
             self.assertEqual(output_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
             self.assertEqual(report["height_color_ramp"], "viridis")
             self.assertEqual(report["point_count"], 3)
+            self.assertGreater(report["width_px"], report["plot_width_px"])
+            self.assertGreater(report["height_px"], report["plot_height_px"])
+            self.assertEqual(report["software_version"], __version__)
 
     def test_extract_laser_paths_accepts_direct_laz_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

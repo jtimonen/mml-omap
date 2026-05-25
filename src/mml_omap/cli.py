@@ -1134,7 +1134,12 @@ def contour_features_from_xyz_grid(
     interval_m: float,
     min_level: float | None = None,
     max_level: float | None = None,
+    simplify_tolerance_m: float = 0.6,
+    index_contour_every: int = 5,
 ) -> list[dict[str, Any]]:
+    import contourpy
+    import numpy as np
+
     if interval_m <= 0:
         raise ValueError("--interval-m must be greater than zero")
     elevations = list(points.values())
@@ -1146,21 +1151,30 @@ def contour_features_from_xyz_grid(
         start += interval_m
     if end >= max_elevation:
         end -= interval_m
+    z = np.empty((len(ys), len(xs)), dtype=float)
+    for y_index, y in enumerate(ys):
+        for x_index, x in enumerate(xs):
+            try:
+                z[y_index, x_index] = points[(x, y)]
+            except KeyError as exc:
+                raise ValueError("XYZ input must be a complete regular grid for contour generation") from exc
+    generator = contourpy.contour_generator(
+        x=np.asarray(xs, dtype=float),
+        y=np.asarray(ys, dtype=float),
+        z=z,
+        name="serial",
+        line_type=contourpy.LineType.Separate,
+    )
     features: list[dict[str, Any]] = []
     level = start
+    level_index = 1
     while level <= end + interval_m * 0.001:
-        segments: list[tuple[list[float], list[float]]] = []
-        for x0, x1 in zip(xs, xs[1:]):
-            for y0, y1 in zip(ys, ys[1:]):
-                required = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-                if any(point not in points for point in required):
-                    continue
-                corners = [(x, y, points[(x, y)]) for x, y in required]
-                cell_values = [corner[2] for corner in corners]
-                if level < min(cell_values) or level > max(cell_values):
-                    continue
-                segments.extend(contour_cell_segments(corners, level))
-        for line in stitch_segments(segments):
+        render_symbol, iof_number, iof_name = contour_symbol_for_level_index(level_index, index_contour_every)
+        for contour_line in generator.lines(level):
+            line = [[float(point[0]), float(point[1])] for point in contour_line]
+            line = simplify_line(line, simplify_tolerance_m)
+            if len(line) < 2:
+                continue
             features.append(
                 {
                     "type": "Feature",
@@ -1168,16 +1182,60 @@ def contour_features_from_xyz_grid(
                         "source": "LiDAR-derived elevation grid",
                         "source_table": "lidar_xyz_grid",
                         "object_type": "line",
-                        "symbol": "101",
-                        "iof_symbol_number": "101",
-                        "iof_symbol_name": "Contour",
+                        "symbol": iof_number,
+                        "iof_symbol_number": iof_number,
+                        "iof_symbol_name": iof_name,
+                        "render_symbol": render_symbol,
                         "korkeusarvo": int(round(level * 1000)),
                     },
                     "geometry": {"type": "LineString", "coordinates": line},
                 }
             )
         level += interval_m
+        level_index += 1
     return features
+
+
+def contour_symbol_for_level_index(level_index: int, index_contour_every: int) -> tuple[str, str, str]:
+    if index_contour_every > 0 and level_index % index_contour_every == 0:
+        return "index_contour", "102", "Index contour"
+    return "contour", "101", "Contour"
+
+
+def simplify_line(line: list[list[float]], tolerance: float) -> list[list[float]]:
+    if tolerance <= 0 or len(line) <= 2:
+        return line
+    return douglas_peucker(line, tolerance)
+
+
+def douglas_peucker(points: list[list[float]], tolerance: float) -> list[list[float]]:
+    if len(points) <= 2:
+        return points
+    start = points[0]
+    end = points[-1]
+    max_distance = -1.0
+    max_index = 0
+    for index, point in enumerate(points[1:-1], start=1):
+        distance = point_line_distance(point, start, end)
+        if distance > max_distance:
+            max_distance = distance
+            max_index = index
+    if max_distance <= tolerance:
+        return [start, end]
+    left = douglas_peucker(points[: max_index + 1], tolerance)
+    right = douglas_peucker(points[max_index:], tolerance)
+    return left[:-1] + right
+
+
+def point_line_distance(point: list[float], start: list[float], end: list[float]) -> float:
+    px, py = point
+    sx, sy = start
+    ex, ey = end
+    dx = ex - sx
+    dy = ey - sy
+    if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+        return math.hypot(px - sx, py - sy)
+    return abs(dy * px - dx * py + ex * sy - ey * sx) / math.hypot(dx, dy)
 
 
 def grid_spacing(values: list[float]) -> float:
@@ -2764,6 +2822,144 @@ def command_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_combined_map(args: argparse.Namespace) -> dict[str, Any]:
+    api_key = resolve_api_key(args)
+    output_base = Path(args.output)
+    work_dir = Path(args.work_dir) if args.work_dir else output_base.parent / "downloads"
+    bbox = parse_orienteering_bbox(args.bbox)
+    magnetic_date = parse_date(args.magnetic_date)
+    magnetic_declination_deg = resolve_magnetic_declination_deg(
+        args.magnetic_declination_deg,
+        bbox=bbox,
+        magnetic_date=magnetic_date.isoformat(),
+    )
+    archive_path = work_dir / "mml" / (output_base.stem + ".zip")
+    progress(f"Downloading MML vector data to {archive_path}...")
+    command_download(download_args_for_generate(args, archive_path))
+    gpkg_path = extract_first_gpkg(archive_path, work_dir / "mml" / output_base.stem)
+    vector_rules = table_rules_with_optional_forest_mask(
+        load_table_rules(Path(args.mapping) if args.mapping else None),
+        include_forest_mask=False,
+    )
+    vector_geojson = convert_gpkg_to_geojson(
+        gpkg_path,
+        bbox=enclosing_grid_bbox(bbox, magnetic_declination_deg),
+        clip_frame=OrientedFrame(bbox, magnetic_declination_deg),
+        table_rules=vector_rules,
+        include_unmapped=False,
+        map_frame={
+            "bbox": bbox,
+            "magnetic_declination_deg": magnetic_declination_deg,
+            "magnetic_date": magnetic_date.isoformat(),
+        },
+    )
+    xs, ys, elevation_points = read_xyz_grid(Path(args.xyz))
+    contour_features = contour_features_from_xyz_grid(
+        xs,
+        ys,
+        elevation_points,
+        interval_m=args.interval_m,
+        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.6),
+        index_contour_every=getattr(args, "index_contour_every", 5),
+    )
+    cliff_features = cliff_features_from_xyz_grid(
+        xs,
+        ys,
+        elevation_points,
+        slope_threshold_deg=args.slope_threshold_deg,
+        min_length_m=args.min_cliff_length_m,
+    )
+    vegetation_features = lidar_vegetation_features(
+        read_lidar_point_rows(Path(args.points)),
+        cell_size_m=args.cell_size_m,
+        min_height_m=args.min_height_m,
+        slow_count=args.slow_count,
+        fight_count=args.fight_count,
+    )
+    terrain_geojson = combined_terrain_geojson(
+        contour_features=contour_features,
+        cliff_features=cliff_features,
+        vegetation_features=vegetation_features,
+    )
+    terrain_geojson = add_map_frame_if_requested(
+        terrain_geojson,
+        bbox_raw=args.bbox,
+        magnetic_declination_deg_raw=str(magnetic_declination_deg),
+        magnetic_date_raw=magnetic_date.isoformat(),
+    )
+    combined = {
+        "type": "FeatureCollection",
+        "name": "mml-omap-combined",
+        "crs": {"type": "name", "properties": {"name": "EPSG:3067"}},
+        "map_frame": {
+            "bbox": bbox,
+            "magnetic_declination_deg": magnetic_declination_deg,
+            "magnetic_date": magnetic_date.isoformat(),
+        },
+        "features": [*geojson_features(vector_geojson), *geojson_features(terrain_geojson)],
+    }
+    progress(
+        "Combined "
+        f"{len(vector_geojson['features'])} vector, "
+        f"{len(contour_features)} contour, "
+        f"{len(cliff_features)} cliff, "
+        f"{len(vegetation_features)} vegetation features."
+    )
+    return combined
+
+
+def command_build(args: argparse.Namespace) -> int:
+    output_base = render_output_base(args.output)
+    combined = build_combined_map(args)
+    geojson_path = output_base.with_suffix(".geojson")
+    write_json(geojson_path, combined)
+    transform = make_render_transform(
+        argparse.Namespace(
+            bbox=None,
+            magnetic_declination_deg="auto",
+            magnetic_date=args.magnetic_date,
+            scale=args.scale,
+            margin_mm=args.margin_mm,
+        ),
+        combined,
+    )
+    contour_interval_m = resolve_contour_interval_m("auto", combined)
+    render_png(
+        combined,
+        output_base.with_suffix(".png"),
+        transform=transform,
+        dpi=args.dpi,
+        include_layout=True,
+        north_line_spacing_m=args.north_line_spacing_m,
+        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
+    )
+    render_pdf(
+        combined,
+        output_base.with_suffix(".pdf"),
+        transform=transform,
+        include_layout=True,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        contour_interval_m=contour_interval_m,
+        north_line_spacing_m=args.north_line_spacing_m,
+        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
+    )
+    render_pdf(
+        combined,
+        output_base.with_name(output_base.name + "-symbols").with_suffix(".pdf"),
+        transform=transform,
+        include_layout=True,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        contour_interval_m=contour_interval_m,
+        north_line_spacing_m=args.north_line_spacing_m,
+        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
+        include_symbol_numbers=True,
+    )
+    print(f"Wrote {geojson_path}, {output_base.with_suffix('.png')}, {output_base.with_suffix('.pdf')}.")
+    return 0
+
+
 def command_contours_from_xyz(args: argparse.Namespace) -> int:
     xs, ys, points = read_xyz_grid(Path(args.input))
     features = contour_features_from_xyz_grid(
@@ -2773,6 +2969,8 @@ def command_contours_from_xyz(args: argparse.Namespace) -> int:
         interval_m=args.interval_m,
         min_level=args.min_level,
         max_level=args.max_level,
+        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.6),
+        index_contour_every=getattr(args, "index_contour_every", 5),
     )
     geojson: dict[str, Any] = {
         "type": "FeatureCollection",
@@ -2855,7 +3053,14 @@ def command_vegetation_from_lidar(args: argparse.Namespace) -> int:
 
 def command_terrain_from_lidar(args: argparse.Namespace) -> int:
     xs, ys, points = read_xyz_grid(Path(args.xyz))
-    contour_features = contour_features_from_xyz_grid(xs, ys, points, interval_m=args.interval_m)
+    contour_features = contour_features_from_xyz_grid(
+        xs,
+        ys,
+        points,
+        interval_m=args.interval_m,
+        simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.6),
+        index_contour_every=getattr(args, "index_contour_every", 5),
+    )
     cliff_features = cliff_features_from_xyz_grid(
         xs,
         ys,
@@ -2890,6 +3095,31 @@ def command_terrain_from_lidar(args: argparse.Namespace) -> int:
         f"{len(cliff_features)} cliffs, "
         f"{len(vegetation_features)} vegetation features."
     )
+    return 0
+
+
+def merge_geojson_documents(paths: list[Path]) -> dict[str, Any]:
+    if not paths:
+        raise ValueError("At least one input GeoJSON is required")
+    merged_features: list[dict[str, Any]] = []
+    output: dict[str, Any] = {
+        "type": "FeatureCollection",
+        "name": "mml-omap-merged",
+        "crs": {"type": "name", "properties": {"name": "EPSG:3067"}},
+        "features": merged_features,
+    }
+    for path in paths:
+        geojson = read_json(path)
+        if "map_frame" in geojson and "map_frame" not in output:
+            output["map_frame"] = geojson["map_frame"]
+        merged_features.extend(geojson_features(geojson))
+    return output
+
+
+def command_merge_geojson(args: argparse.Namespace) -> int:
+    geojson = merge_geojson_documents([Path(path) for path in args.inputs])
+    write_json(Path(args.output), geojson)
+    print(f"Wrote {len(geojson['features'])} merged features.")
     return 0
 
 
@@ -3041,6 +3271,42 @@ def build_parser() -> argparse.ArgumentParser:
     common_api.add_argument("--poll-seconds", type=float, default=5.0)
     common_api.add_argument("--timeout-seconds", type=float, default=600.0)
 
+    build = subparsers.add_parser(
+        "build",
+        parents=[common_api],
+        help="Build the combined orienteering map from MML vectors, a ground XYZ grid, and LiDAR points.",
+    )
+    build.add_argument("output", help="Output base path. Writes .geojson, .png, .pdf, and -symbols.pdf.")
+    build.add_argument("bbox", help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
+    build.add_argument("xyz", help="Regular ground-elevation XYZ grid in EPSG:3067 meters.")
+    build.add_argument("points", help="LAS/LAZ or text rows for vegetation: x y z [classification].")
+    build.add_argument("--theme", default="maastotietokanta_kaikki")
+    build.add_argument("--work-dir")
+    build.add_argument("--mapping", help="JSON table mapping overrides")
+    build.add_argument("--scale", type=int, default=5000)
+    build.add_argument("--margin-mm", type=float, default=5.0)
+    build.add_argument("--dpi", type=int, default=300)
+    build.add_argument("--map-title", help="Title text printed in SVG/PDF layout metadata.")
+    build.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG/PDF layout metadata.")
+    build.add_argument("--interval-m", type=float, default=2.5)
+    build.add_argument("--contour-simplify-tolerance-m", type=float, default=0.6)
+    build.add_argument("--index-contour-every", type=int, default=5)
+    build.add_argument("--slope-threshold-deg", type=float, default=38.0)
+    build.add_argument("--min-cliff-length-m", type=float, default=8.0)
+    build.add_argument("--cell-size-m", type=float, default=4.0)
+    build.add_argument("--min-height-m", type=float, default=1.8)
+    build.add_argument("--slow-count", type=int, default=4)
+    build.add_argument("--fight-count", type=int, default=12)
+    build.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
+    build.add_argument("--contour-merge-tolerance-m", type=float, default=DEFAULT_CONTOUR_MERGE_TOLERANCE_M)
+    build.add_argument(
+        "--magnetic-declination-deg",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK.",
+    )
+    build.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
+    build.set_defaults(func=command_build)
+
     download = subparsers.add_parser("download", parents=[common_api], help="Download MML bbox GeoPackage zip.")
     download.add_argument("output")
     download.add_argument("--bbox", required=True, help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
@@ -3105,6 +3371,8 @@ def build_parser() -> argparse.ArgumentParser:
     contours.add_argument("--interval-m", type=float, default=2.5, help="Contour interval in meters.")
     contours.add_argument("--min-level", type=float, help="Optional lowest contour elevation in meters.")
     contours.add_argument("--max-level", type=float, help="Optional highest contour elevation in meters.")
+    contours.add_argument("--contour-simplify-tolerance-m", type=float, default=0.6)
+    contours.add_argument("--index-contour-every", type=int, default=5)
     contours.add_argument("--bbox", help="Optional min_x,min_y,max_x,max_y clip in EPSG:3067 meters")
     contours.add_argument(
         "--magnetic-declination-deg",
@@ -3151,6 +3419,8 @@ def build_parser() -> argparse.ArgumentParser:
     terrain.add_argument("--points", help="Optional LAS/LAZ or text rows for vegetation: x y z [classification].")
     terrain.add_argument("output")
     terrain.add_argument("--interval-m", type=float, default=2.5)
+    terrain.add_argument("--contour-simplify-tolerance-m", type=float, default=0.6)
+    terrain.add_argument("--index-contour-every", type=int, default=5)
     terrain.add_argument("--slope-threshold-deg", type=float, default=38.0)
     terrain.add_argument("--min-cliff-length-m", type=float, default=8.0)
     terrain.add_argument("--cell-size-m", type=float, default=4.0)
@@ -3165,6 +3435,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     terrain.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     terrain.set_defaults(func=command_terrain_from_lidar)
+
+    merge = subparsers.add_parser("merge-geojson", help="Merge multiple GeoJSON inputs into one FeatureCollection.")
+    merge.add_argument("output")
+    merge.add_argument("inputs", nargs="+")
+    merge.set_defaults(func=command_merge_geojson)
 
     common_render = argparse.ArgumentParser(add_help=False)
     common_render.add_argument("input", help="Input GeoJSON")

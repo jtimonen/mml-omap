@@ -34,6 +34,7 @@ from mml_omap.cli import (
     command_contours_from_xyz,
     cliff_features_from_xyz_grid,
     lidar_vegetation_features,
+    merge_geojson_documents,
     should_render_point_symbol,
     table_rules_with_optional_forest_mask,
     validate_orienteering_bbox_size,
@@ -463,6 +464,20 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertEqual(features[0]["properties"]["korkeusarvo"], 5000)
         self.assertEqual(features[0]["geometry"]["type"], "LineString")
 
+    def test_lidar_xyz_grid_marks_index_contours(self) -> None:
+        xs = [0.0, 10.0]
+        ys = [0.0, 10.0]
+        points = {
+            (0.0, 0.0): 0.0,
+            (10.0, 0.0): 30.0,
+            (0.0, 10.0): 0.0,
+            (10.0, 10.0): 30.0,
+        }
+
+        features = contour_features_from_xyz_grid(xs, ys, points, interval_m=5.0, index_contour_every=2)
+
+        self.assertTrue(any(feature["properties"]["symbol"] == "102" for feature in features))
+
     def test_lidar_xyz_grid_generates_candidate_cliffs(self) -> None:
         xs = [0.0, 10.0, 20.0]
         ys = [0.0, 10.0, 20.0]
@@ -550,6 +565,31 @@ class GenerateCommandTest(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             data = cli.read_json(output)
             self.assertEqual(data["symbols"]["lake"]["iof_symbol_number"], "301")
+
+    def test_merge_geojson_documents_combines_features_and_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "first.geojson"
+            second = Path(directory) / "second.geojson"
+            cli.write_json(
+                first,
+                {
+                    "type": "FeatureCollection",
+                    "map_frame": {"bbox": [0, 0, 10, 10], "magnetic_declination_deg": 0.0},
+                    "features": [{"type": "Feature", "properties": {"symbol": "101"}, "geometry": None}],
+                },
+            )
+            cli.write_json(
+                second,
+                {
+                    "type": "FeatureCollection",
+                    "features": [{"type": "Feature", "properties": {"symbol": "202"}, "geometry": None}],
+                },
+            )
+
+            merged = merge_geojson_documents([first, second])
+
+        self.assertEqual(len(merged["features"]), 2)
+        self.assertEqual(merged["map_frame"]["bbox"], [0, 0, 10, 10])
 
 
 if __name__ == "__main__":

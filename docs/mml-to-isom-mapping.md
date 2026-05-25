@@ -1,7 +1,7 @@
 # MML To ISOM Mapping
 
 This file is the explicit contract between MML Maastotietokanta source classes
-and the ISOM symbols written to generated GeoJSON.
+and the ISOM symbols written to GeoPackage/vector-derived GeoJSON.
 
 `mml-omap` writes only ISOM symbol numbers to `properties.symbol`. Internal
 renderer names such as `major_road`, `path`, or `swamp` are implementation
@@ -24,7 +24,7 @@ Primary references:
 
 ## GeoJSON Properties
 
-For every emitted mapped feature:
+For every emitted mapped vector feature:
 
 - `symbol`: ISOM symbol number as a string.
 - `iof_symbol_number`: same value as `symbol`, kept for explicitness.
@@ -36,7 +36,7 @@ Features without an ISOM symbol assignment are skipped by default. With
 `--include-unmapped`, they may be retained for inspection, but they do not get a
 `symbol` property.
 
-## Current Built-In Mapping
+## Current Built-In Vector Mapping
 
 | MML table | MML `kohdeluokka` | ISOM symbol | ISOM name | Notes |
 | --- | --- | --- | --- | --- |
@@ -69,18 +69,17 @@ Features without an ISOM symbol assignment are skipped by default. With
 | `rakennusreunaviiva` | all | `521` | Building | Building outline linework. |
 | `taajaanrakennettualue` | all | `520` | Area that shall not be entered | Broad proxy for private/built-up area; not field-checked. |
 
-## Optional Forest Mask
+## LiDAR/DEM-Derived Terrain Features
 
-`--include-forest-mask` adds `metsamaankasvillisuus` polygons as ISOM `406`
-(`Vegetation: slow running`). This is intentionally opt-in. The MML forest
-polygon says that the area is forested; it does not measure orienteering
-runnability, visibility, undergrowth, or passability. Treat it as a visual
-green mask for experiments and background-map comparison, not as a
-field-checked ISOM vegetation classification.
+The combined build does not derive contours, cliffs, or vegetation from MML
+`kohdeluokka` mappings. It writes already-numbered candidate terrain features
+from local LiDAR/DEM inputs:
 
-Orienteering map style green needs laser scanning or another vegetation-density
-source with tuned classification heuristics, not this single vector land-cover
-class.
+| Build component | Input | ISOM output | Notes |
+| --- | --- | --- | --- |
+| Contours | regular ground-elevation XYZ grid | `101`, `102` | Uses the requested contour interval, emits every fifth line as index contour by default, and stores `korkeusarvo` in millimetres. |
+| Cliffs | regular ground-elevation XYZ grid | `202` | Candidate cliff lines from steep slope bands; passability and final symbol choice need review. |
+| Vegetation | LAS/LAZ or text rows `x y z [classification]` | `406`, `410` | Candidate vegetation polygons from above-ground point density. |
 
 ## Explicitly Not Emitted By Default
 
@@ -95,11 +94,13 @@ class.
 This mapping is intentionally conservative. The following require more source
 data or field interpretation before they can be mapped responsibly:
 
-- vegetation runnability symbols `406`-`410`
+- field-checked vegetation runnability; the LiDAR pipeline generates candidate
+  `406`/`410` polygons, but thresholds are local and need review
 - uncrossable marsh `307` versus marsh `308`
 - impassable fence/wall symbols
 - boulder size classes and boulder clusters
 - paved area versus private/out-of-bounds area
 - path distinctness and road/track usability
-- cliffs derived from laser scanning or slope analysis
+- final cliff classification; the LiDAR pipeline generates candidate `202`
+  lines from slope bands, but passability and symbol selection still need review
 

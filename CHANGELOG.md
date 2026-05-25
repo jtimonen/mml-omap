@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.8
+
+- Sports and recreation areas from MML `urheilujavirkistysalue` now render as
+  ISOM `401` Open land instead of outline-only/black fallback areas.
+- Reduced the built-in Puijo example bbox to about half its previous area while
+  keeping it on A4 at 1:10000.
+
+## 0.1.7
+
+- Added an always-generated `*-lidar-return-types.png` diagnostic image that
+  colors LiDAR points by return class group: ground, water, low/medium/high
+  vegetation, building, noise, and other.
+- Kept the existing `*-lidar-points.png` height diagnostic as an all-return
+  height-colored point cloud.
+- Terrain reports now include both LiDAR diagnostic image reports.
+- Documented the return class groups and diagnostic colors.
+
+## 0.1.6
+
+- Vegetation extraction now excludes water, building, noise, bridge-deck, and
+  high-noise LiDAR classes before counting runnability candidates.
+- Vegetation green-hit counting now uses LAS vegetation classes `3`, `4`, and
+  `5`, plus unclassified candidate classes `0` and `1` only after the same
+  height-above-ground checks.
+- Documented the LiDAR class filtering used by vegetation extraction.
+
 ## 0.1.5
 
 - Renamed built-in example output stems to match the example names:

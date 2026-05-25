@@ -215,13 +215,6 @@ ISOM_SYMBOL_LIBRARY: dict[str, dict[str, Any]] = {
         "render_order": 500,
         "style": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#222222"},
     },
-    "recreation_area": {
-        "iof_symbol_number": None,
-        "iof_symbol_name": None,
-        "geometry": "area",
-        "render_order": 105,
-        "style": {"stroke": "none", "stroke_width_mm": 0.0, "fill": "none"},
-    },
     "place_label": {
         "iof_symbol_number": None,
         "iof_symbol_name": None,

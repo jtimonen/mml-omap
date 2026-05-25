@@ -85,7 +85,7 @@ from downloaded MML laser scanning point clouds:
 | MML table | Reason |
 | --- | --- |
 | `paikannimi` | Place-name labels are not numbered ISOM terrain/object symbols. |
-| `urheilujavirkistysalue` | MML recreation/sports land use is too broad to assign a reliable ISOM symbol automatically. |
+| `urheilujavirkistysalue` | all | `401` | Open land | Recreation/sports areas such as football fields are rendered as open land instead of black outline-only areas. |
 | Any unmapped table | No documented ISOM mapping has been assigned yet. |
 
 ## Known Gaps

@@ -69,14 +69,28 @@ report includes the contour interval, downloaded laser sheets, point-cloud grid
 parameters, global and per-cell noise estimates, interpolation distances, and
 generated feature counts.
 
-Each source-data build also writes one `*-lidar-points.png` diagnostic image on
-the same standard paper size, orientation, scale, and map frame as the rendered
-map. Every observed point inside the rendered map frame is plotted at its map
-position and colored by height with the viridis color ramp. The image includes
-the same footer metadata as the map outputs plus point count and a height color
-scale showing the elevation range used for the ramp. All terrain reports
-generated from the same source data reference that same image path, pixel size,
-point count, software version, paper size, scale, and height range.
+Each source-data build also writes two LiDAR diagnostic images on the same
+standard paper size, orientation, scale, and map frame as the rendered map.
+`*-lidar-points.png` plots every observed point inside the rendered map frame
+at its map position and colors it by height with the viridis color ramp.
+`*-lidar-return-types.png` plots the same point cloud colored by LAS return
+class group:
+
+| Group | LAS classes | Diagnostic color |
+| --- | --- | --- |
+| Ground | `2` | brown |
+| Water | `9` | blue |
+| Low vegetation | `3` | light green |
+| Medium vegetation | `4` | green |
+| High vegetation | `5` | dark green |
+| Building | `6` | dark gray |
+| Noise | `7`, `18` | magenta |
+| Other | all other or missing classes | gray |
+
+Both images include the same footer metadata as the map outputs plus point
+counts and legends. All terrain reports generated from the same source data
+reference those image paths, pixel sizes, point counts, software version, paper
+size, scale, and diagnostic-specific legend data.
 
 ## Ground Model
 
@@ -137,18 +151,21 @@ final passability, teeth, and cartographic displacement still need review.
 ## Vegetation
 
 Vegetation uses the same LAS/LAZ point rows. Points are bucketed into square
-cells. Ground height is estimated from classified ground points where available,
-otherwise from local minima.
+cells. Ground height is estimated from classified ground points, LAS class `2`.
+Vegetation density uses only vegetation classes `3`, `4`, and `5`, plus
+unclassified candidate returns `0` and `1` when they pass the same
+height-above-ground tests. Water, buildings, noise, bridge-deck, and high-noise
+classes are excluded before hit counting, so classes such as water `9`,
+building `6`, noise `7`, and high noise `18` cannot create green vegetation.
 
-The classifier follows the same basic threshold shape as Karttapullautin:
-count green hits in a low vegetation band and compare them to near-ground hits
-with fixed global ratio thresholds. The default near-ground limit is 0.8 m, the
-default green-hit band is 0.8-5.0 m, and the default ratio thresholds are 0.68
-for ISOM `406` and 1.13 for ISOM `410`. Minimum hit counts are also required.
-Candidate cells are then filtered by continuous region area, so isolated cells
-representing one or two trees are not drawn as green. Tall canopy returns do
-not by themselves create green areas. Adjacent cells of the same class are
-dissolved into polygons with Shapely before rendering.
+The classifier counts green hits in a low vegetation band and compares them to
+near-ground hits with fixed global ratio thresholds. The default near-ground
+limit is 0.8 m, the default green-hit band is 0.8-5.0 m, and the default ratio
+thresholds are 0.68 for ISOM `406` and 1.13 for ISOM `410`. Minimum hit counts
+are also required. Candidate cells are then filtered by continuous region area,
+so isolated cells representing one or two trees are not drawn as green. Tall
+canopy returns do not by themselves create green areas. Adjacent cells of the
+same class are dissolved into polygons with Shapely before rendering.
 
 ## Known Gaps
 

@@ -81,6 +81,7 @@ The command writes:
 - `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.pdf`
 - matching `espoo-keskuspuisto-2_5m.*` and `espoo-keskuspuisto-5m.*` outputs
 - `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-lidar-points.png`
+- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-lidar-return-types.png`
 - `espoo-keskuspuisto-1m-terrain-report.json`,
   `espoo-keskuspuisto-2_5m-terrain-report.json`, and
   `espoo-keskuspuisto-5m-terrain-report.json`
@@ -99,21 +100,22 @@ uv run mml-omap kotka-jukola
 ```
 
 The command writes `kotka-jukola-1m.*`, `kotka-jukola-2_5m.*`, and
-`kotka-jukola-5m.*` map outputs, one shared
-`kotka-jukola-lidar-points.png`, terrain reports, and the source downloads.
+`kotka-jukola-5m.*` map outputs, shared `kotka-jukola-lidar-points.png` and
+`kotka-jukola-lidar-return-types.png` diagnostics, terrain reports, and the
+source downloads.
 
 ## Puijo Example
 
 This 1:10000 example is around Puijon torni and fits on A4 portrait. The bbox
-is `532322,6974301,534322,6977101` in EPSG:3067 meters.
+is `532615,6974711,534029,6976689` in EPSG:3067 meters.
 
 ```sh
 uv run mml-omap puijo
 ```
 
 The command writes `puijo-1m.*`, `puijo-2_5m.*`, and `puijo-5m.*` map outputs,
-one shared `puijo-lidar-points.png`, terrain reports, and the source downloads
-under `builds/examples/puijo/`.
+shared `puijo-lidar-points.png` and `puijo-lidar-return-types.png` diagnostics,
+terrain reports, and the source downloads under `builds/examples/puijo/`.
 
 ## Vuokatinvaara Example
 
@@ -125,9 +127,9 @@ uv run mml-omap vuokatinvaara
 ```
 
 The command writes `vuokatinvaara-1m.*`, `vuokatinvaara-2_5m.*`, and
-`vuokatinvaara-5m.*` map outputs, one shared
-`vuokatinvaara-lidar-points.png`, terrain reports, and the source downloads
-under `builds/examples/vuokatinvaara/`.
+`vuokatinvaara-5m.*` map outputs, shared `vuokatinvaara-lidar-points.png` and
+`vuokatinvaara-lidar-return-types.png` diagnostics, terrain reports, and the
+source downloads under `builds/examples/vuokatinvaara/`.
 
 ## What It Generates
 

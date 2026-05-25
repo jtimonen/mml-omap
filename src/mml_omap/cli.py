@@ -103,7 +103,7 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "niitty": {"object_type": "area", "symbol": "field"},
     "muuavoinalue": {"object_type": "area", "symbol": "field"},
     "puisto": {"object_type": "area", "symbol": "field"},
-    "urheilujavirkistysalue": {"object_type": "area", "symbol": "recreation_area"},
+    "urheilujavirkistysalue": {"object_type": "area", "symbol": "field"},
     "kallioalue": {"object_type": "area", "symbol": "open_rock"},
     "rakennus": {"object_type": "area", "symbol": "building"},
     "kivi": {"object_type": "point", "symbol": "mapped_rock"},
@@ -129,6 +129,10 @@ DEFAULT_GREEN_FIGHT_RATIO = 1.13
 DEFAULT_GREEN_MIN_HITS = 8
 DEFAULT_GREEN_FIGHT_MIN_HITS = 24
 DEFAULT_GREEN_MIN_REGION_AREA_M2 = 200.0
+LIDAR_GROUND_CLASS = 2
+LIDAR_VEGETATION_CLASSES = {3, 4, 5}
+LIDAR_UNCLASSIFIED_VEGETATION_CANDIDATE_CLASSES = {0, 1}
+LIDAR_VEGETATION_EXCLUDED_CLASSES = {6, 7, 9, 17, 18}
 
 
 def read_json(path: Path) -> Any:
@@ -1779,9 +1783,15 @@ def lidar_vegetation_features(
     green_max_height_m = max(DEFAULT_GREEN_MAX_HEIGHT_M, green_min_height_m)
     for x, y, z, classification in rows:
         cell = (math.floor((x - min_x) / cell_size_m), math.floor((y - min_y) / cell_size_m))
-        if classification == 2 or cell not in ground or z < ground[cell]:
-            ground[cell] = z
-    for x, y, z, _classification in rows:
+        if classification == LIDAR_GROUND_CLASS or classification is None:
+            if cell not in ground or z < ground[cell]:
+                ground[cell] = z
+    if not ground:
+        raise ValueError("Vegetation extraction requires ground-classified points")
+    for x, y, z, classification in rows:
+        normalized_classification = normalize_lidar_classification(classification)
+        if not lidar_return_can_support_vegetation(normalized_classification):
+            continue
         cell = (math.floor((x - min_x) / cell_size_m), math.floor((y - min_y) / cell_size_m))
         ground_z = ground.get(cell)
         if ground_z is None:
@@ -1789,7 +1799,10 @@ def lidar_vegetation_features(
         height_above_ground = z - ground_z
         if 0.0 <= height_above_ground <= DEFAULT_GREEN_GROUND_HEIGHT_M:
             near_ground_hit_counts[cell] = near_ground_hit_counts.get(cell, 0) + 1
-        if green_min_height_m <= height_above_ground <= green_max_height_m:
+        if (
+            lidar_return_can_count_as_green(normalized_classification)
+            and green_min_height_m <= height_above_ground <= green_max_height_m
+        ):
             green_hit_counts[cell] = green_hit_counts.get(cell, 0) + 1
     cells_by_symbol: dict[str, list[tuple[float, float, float, float, int]]] = {"406": [], "410": []}
     for (cell_x, cell_y), count in green_hit_counts.items():
@@ -1834,11 +1847,36 @@ def lidar_vegetation_features(
                         "green_min_hit_count": slow_count,
                         "green_fight_min_hit_count": fight_count,
                         "green_min_region_area_m2": DEFAULT_GREEN_MIN_REGION_AREA_M2,
+                        "vegetation_lidar_classes": sorted(LIDAR_VEGETATION_CLASSES),
+                        "unclassified_candidate_lidar_classes": sorted(
+                            LIDAR_UNCLASSIFIED_VEGETATION_CANDIDATE_CLASSES
+                        ),
+                        "excluded_lidar_classes": sorted(LIDAR_VEGETATION_EXCLUDED_CLASSES),
                     },
                     "geometry": geometry,
                 }
             )
     return features
+
+
+def normalize_lidar_classification(classification: int | None) -> int | None:
+    if classification is None:
+        return None
+    return int(classification) & 31
+
+
+def lidar_return_can_support_vegetation(classification: int | None) -> bool:
+    if classification in LIDAR_VEGETATION_EXCLUDED_CLASSES:
+        return False
+    return classification == LIDAR_GROUND_CLASS or lidar_return_can_count_as_green(classification)
+
+
+def lidar_return_can_count_as_green(classification: int | None) -> bool:
+    if classification in LIDAR_VEGETATION_CLASSES:
+        return True
+    if classification is None:
+        return True
+    return classification in LIDAR_UNCLASSIFIED_VEGETATION_CANDIDATE_CLASSES
 
 
 def continuous_region_cells(
@@ -2045,8 +2083,6 @@ def feature_symbol(feature: dict[str, Any]) -> str:
         return "wide_stream"
     if properties.get("source_table") == "maatalousmaa" and symbol == "field":
         return "cultivated_land"
-    if properties.get("source_table") == "urheilujavirkistysalue" and symbol == "field":
-        return "recreation_area"
     return symbol
 
 
@@ -2246,7 +2282,7 @@ def map_footer_text(transform: RenderTransform, map_maker: str, contour_interval
 def lidar_footer_text(transform: RenderTransform, map_maker: str) -> str:
     return (
         f"{transform.paper_size} | Scale 1:{transform.scale} | {map_maker} | "
-        f"mml-omap {__version__} | LiDAR point heights | "
+        f"mml-omap {__version__} | LiDAR diagnostics | "
         f"KOK {transform.magnetic_declination_deg:.2f} deg | EPSG:3067"
     )
 
@@ -2834,6 +2870,143 @@ def render_lidar_height_png(
     progress(
         "Wrote LiDAR point height PNG "
         f"to {output_path} with {len(point_array)} points colored by height."
+    )
+    return report
+
+
+def lidar_return_type(classification: int | None) -> str:
+    normalized = normalize_lidar_classification(classification)
+    if normalized == LIDAR_GROUND_CLASS:
+        return "ground"
+    if normalized == 9:
+        return "water"
+    if normalized == 3:
+        return "low_vegetation"
+    if normalized == 4:
+        return "medium_vegetation"
+    if normalized == 5:
+        return "high_vegetation"
+    if normalized == 6:
+        return "building"
+    if normalized in {7, 18}:
+        return "noise"
+    return "other"
+
+
+LIDAR_RETURN_TYPE_STYLES: dict[str, tuple[str, tuple[int, int, int]]] = {
+    "ground": ("Ground", (166, 118, 64)),
+    "water": ("Water", (0, 143, 213)),
+    "low_vegetation": ("Low vegetation", (196, 230, 126)),
+    "medium_vegetation": ("Medium vegetation", (91, 184, 76)),
+    "high_vegetation": ("High vegetation", (0, 112, 60)),
+    "building": ("Building", (60, 60, 60)),
+    "noise": ("Noise", (180, 0, 180)),
+    "other": ("Other", (150, 150, 150)),
+}
+
+
+def render_lidar_return_type_png(
+    rows: list[tuple[float, float, float, int | None]],
+    output_path: Path,
+    *,
+    transform: RenderTransform,
+    dpi: int,
+    map_title_text: str | None = None,
+    map_maker: str = "mml-omap",
+) -> dict[str, Any]:
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("LiDAR return-type PNG rendering requires numpy") from exc
+
+    px_per_mm = dpi / 25.4
+    width = max(1, int(round(transform.page_width_mm * px_per_mm)))
+    height = max(1, int(round(transform.page_height_mm * px_per_mm)))
+    plot_left = int(round(transform.map_left_mm * px_per_mm))
+    plot_top = int(round(transform.map_top_mm * px_per_mm))
+    plot_width = max(1, int(round(transform.map_width_mm * px_per_mm)))
+    plot_height = max(1, int(round(transform.map_height_mm * px_per_mm)))
+    plot_right = plot_left + plot_width
+    plot_bottom = plot_top + plot_height
+    image = np.full((height, width, 4), 255, dtype=np.uint8)
+    counts = {key: 0 for key in LIDAR_RETURN_TYPE_STYLES}
+
+    point_count = 0
+    for x_raw, y_raw, _z_raw, classification in rows:
+        if not math.isfinite(x_raw) or not math.isfinite(y_raw):
+            continue
+        x_mm, y_mm = transform.to_mm([x_raw, y_raw])
+        x_px = int(round(x_mm * px_per_mm))
+        y_px = int(round(y_mm * px_per_mm))
+        if not (plot_left <= x_px <= plot_right and plot_top <= y_px <= plot_bottom):
+            continue
+        return_type = lidar_return_type(classification)
+        _label, color = LIDAR_RETURN_TYPE_STYLES[return_type]
+        image[min(max(y_px, 0), height - 1), min(max(x_px, 0), width - 1), 0:3] = color
+        image[min(max(y_px, 0), height - 1), min(max(x_px, 0), width - 1), 3] = 255
+        counts[return_type] += 1
+        point_count += 1
+
+    image[plot_top, plot_left:plot_right, 0:3] = 0
+    image[plot_bottom - 1, plot_left:plot_right, 0:3] = 0
+    image[plot_top:plot_bottom, plot_left, 0:3] = 0
+    image[plot_top:plot_bottom, plot_right - 1, 0:3] = 0
+
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        pixels = bytearray(image.reshape(height * width * 4).tobytes())
+        write_png(output_path, width, height, pixels)
+    else:
+        pil_image = Image.fromarray(image, mode="RGBA")
+        draw = ImageDraw.Draw(pil_image)
+        title_font = pillow_layout_font(max(12, int(round(3.2 * px_per_mm))))
+        footer_font = pillow_layout_font(max(10, int(round(2.6 * px_per_mm))))
+        title = f"{map_title(output_path, map_title_text)} LiDAR return types"
+        footer = lidar_footer_text(transform, map_maker)
+        text_x = max(2, plot_left)
+        draw_pillow_text_fit(draw, (text_x, max(2, plot_top - int(round(4.0 * px_per_mm)))), title, fill=(0, 0, 0, 255), font=title_font, max_width_px=width - text_x - 2)
+        draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(4.2 * px_per_mm)))), footer, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
+        legend_x = plot_right + int(round(2.5 * px_per_mm))
+        if legend_x > width - int(round(35.0 * px_per_mm)):
+            legend_x = max(2, plot_left + int(round(1.5 * px_per_mm)))
+        legend_y = plot_top + int(round(2.0 * px_per_mm))
+        swatch = max(8, int(round(2.5 * px_per_mm)))
+        line_gap = max(12, int(round(4.0 * px_per_mm)))
+        for index, (key, (label, color)) in enumerate(LIDAR_RETURN_TYPE_STYLES.items()):
+            y = legend_y + index * line_gap
+            if y + swatch >= height:
+                break
+            draw.rectangle((legend_x, y, legend_x + swatch, y + swatch), fill=(*color, 255), outline=(0, 0, 0, 255))
+            draw.text((legend_x + swatch + 5, y), f"{label}: {counts[key]}", fill=(0, 0, 0, 255), font=footer_font)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pil_image.save(output_path)
+
+    report = {
+        "path": str(output_path),
+        "bbox": [transform.min_x, transform.min_y, transform.max_x, transform.max_y],
+        "paper_size": transform.paper_size,
+        "scale": transform.scale,
+        "width_px": width,
+        "height_px": height,
+        "plot_width_px": plot_width,
+        "plot_height_px": plot_height,
+        "plot_left_px": plot_left,
+        "plot_top_px": plot_top,
+        "dpi": dpi,
+        "pixels_per_m": 1000.0 * px_per_mm / transform.scale,
+        "point_count": point_count,
+        "return_type_counts": counts,
+        "return_type_colors": {
+            key: {"label": label, "rgb": color}
+            for key, (label, color) in LIDAR_RETURN_TYPE_STYLES.items()
+        },
+        "software": "mml-omap",
+        "software_version": __version__,
+    }
+    progress(
+        "Wrote LiDAR return-type PNG "
+        f"to {output_path} with {point_count} points colored by LAS class group."
     )
     return report
 
@@ -3723,7 +3896,7 @@ def build_combined_map(args: argparse.Namespace) -> tuple[dict[str, Any], dict[s
 def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
     source_data = build_source_data(args)
-    ensure_lidar_point_report(source_data, output_base, args)
+    ensure_lidar_diagnostic_reports(source_data, output_base, args)
     combined, report = combined_map_from_source_data(source_data, args, interval_m=args.interval_m)
     render_build_outputs(output_base, combined, report, args, source_data=source_data)
     return 0
@@ -3754,6 +3927,29 @@ def ensure_lidar_point_report(source_data: dict[str, Any], output_base: Path, ar
     return report
 
 
+def ensure_lidar_return_type_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    existing = source_data.get("lidar_return_type_png")
+    if isinstance(existing, dict):
+        return existing
+    report = render_lidar_return_type_png(
+        source_data["lidar_rows"],
+        output_base.with_name(output_base.name + "-lidar-return-types").with_suffix(".png"),
+        transform=lidar_diagnostic_transform(source_data, args),
+        dpi=args.dpi,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+    )
+    source_data["lidar_return_type_png"] = report
+    return report
+
+
+def ensure_lidar_diagnostic_reports(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "lidar_point_height_png": ensure_lidar_point_report(source_data, output_base, args),
+        "lidar_return_type_png": ensure_lidar_return_type_report(source_data, output_base, args),
+    }
+
+
 def render_build_outputs(
     output_base: Path,
     combined: dict[str, Any],
@@ -3764,11 +3960,11 @@ def render_build_outputs(
 ) -> None:
     geojson_path = output_base.with_suffix(".geojson")
     write_json(geojson_path, combined)
-    report["lidar_point_height_png"] = ensure_lidar_point_report(
+    report.update(ensure_lidar_diagnostic_reports(
         source_data,
         render_output_base(source_data["diagnostic_output"]),
         args,
-    )
+    ))
     write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
     transform = make_render_transform(
         argparse.Namespace(
@@ -3839,7 +4035,7 @@ def command_ekp(args: argparse.Namespace) -> int:
         magnetic_date=None,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_point_report(source_data, render_output_base(build_args.output), build_args)
+    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -3883,7 +4079,7 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
         magnetic_date=None,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_point_report(source_data, render_output_base(build_args.output), build_args)
+    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -3896,7 +4092,7 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
 def command_puijo(args: argparse.Namespace) -> int:
     build_args = argparse.Namespace(
         output="builds/examples/puijo/puijo",
-        bbox="532322,6974301,534322,6977101",
+        bbox="532615,6974711,534029,6976689",
         api_key=args.api_key,
         api_key_env=args.api_key_env,
         base_url=args.base_url,
@@ -3927,7 +4123,7 @@ def command_puijo(args: argparse.Namespace) -> int:
         magnetic_date=None,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_point_report(source_data, render_output_base(build_args.output), build_args)
+    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -3971,7 +4167,7 @@ def command_vuokatinvaara(args: argparse.Namespace) -> int:
         magnetic_date=None,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_point_report(source_data, render_output_base(build_args.output), build_args)
+    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -4301,7 +4497,13 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common_api],
         help="Build the combined orienteering map from MML vectors and LiDAR point clouds.",
     )
-    build.add_argument("output", help="Output base path. Writes .geojson, .png, .pdf, -lidar-points.png, and -terrain-report.json.")
+    build.add_argument(
+        "output",
+        help=(
+            "Output base path. Writes .geojson, .png, .pdf, -lidar-points.png, "
+            "-lidar-return-types.png, and -terrain-report.json."
+        ),
+    )
     build.add_argument("bbox", help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
     build.add_argument("--theme", default="maastotietokanta_kaikki")
     build.add_argument("--work-dir")

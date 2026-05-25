@@ -29,6 +29,7 @@ from mml_omap.cli import (
     iof_symbol_metadata,
     read_env_file_value,
     render_lidar_height_png,
+    render_lidar_return_type_png,
     render_output_base,
     render_pdf,
     render_svg,
@@ -354,6 +355,15 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertIn("url(#cultivated-land)", svg)
         self.assertIn('stroke="#b68a57"', svg)
 
+    def test_sports_and_recreation_area_maps_to_open_land(self) -> None:
+        feature = {
+            "type": "Feature",
+            "properties": {"source_table": "urheilujavirkistysalue", "symbol": "401", "object_type": "area"},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [20, 0], [20, 10], [0, 10], [0, 0]]]},
+        }
+
+        self.assertEqual(feature_symbol(feature), "field")
+
     def test_svg_render_includes_layout_metadata_and_north_lines(self) -> None:
         geojson = {"type": "FeatureCollection", "features": []}
         with tempfile.TemporaryDirectory() as directory:
@@ -558,6 +568,38 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertEqual(features, [])
 
+    def test_lidar_vegetation_ignores_water_noise_and_building_classes(self) -> None:
+        rows = []
+        for x in (1.0, 11.0):
+            rows.extend((x, 1.0, 0.0, 2) for _index in range(10))
+            rows.extend((x, 1.0, 3.0, classification) for classification in (6, 7, 9, 18) for _index in range(8))
+
+        features = lidar_vegetation_features(
+            rows,
+            cell_size_m=10.0,
+            min_height_m=0.8,
+            slow_count=8,
+            fight_count=10,
+        )
+
+        self.assertEqual(features, [])
+
+    def test_lidar_vegetation_counts_unclassified_candidates_after_exclusions(self) -> None:
+        rows = []
+        for x in (1.0, 11.0):
+            rows.extend((x, 1.0, 0.0, 2) for _index in range(10))
+            rows.extend((x, 1.0, 3.0, 1) for _index in range(8))
+
+        features = lidar_vegetation_features(
+            rows,
+            cell_size_m=10.0,
+            min_height_m=0.8,
+            slow_count=8,
+            fight_count=10,
+        )
+
+        self.assertTrue(features)
+
     def test_ground_grid_reports_noise_estimates(self) -> None:
         rows = [
             (0.0, 0.0, 10.0, 2),
@@ -598,6 +640,33 @@ class OrienteeringBoundsTest(unittest.TestCase):
             self.assertEqual(report["scale"], 100)
             self.assertGreater(report["width_px"], report["plot_width_px"])
             self.assertGreater(report["height_px"], report["plot_height_px"])
+            self.assertEqual(report["software_version"], __version__)
+
+    def test_lidar_return_type_png_reports_class_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "types.png"
+            report = render_lidar_return_type_png(
+                [
+                    (0.0, 0.0, 10.0, 2),
+                    (0.2, 0.2, 10.0, 9),
+                    (0.4, 0.4, 10.0, 3),
+                    (0.6, 0.6, 10.0, 4),
+                    (0.8, 0.8, 10.0, 5),
+                    (1.0, 1.0, 10.0, 6),
+                ],
+                output_path,
+                transform=RenderTransform([0.0, 0.0, 1.0, 1.0], 100, 5),
+                dpi=96,
+            )
+
+            self.assertTrue(output_path.exists())
+            self.assertEqual(output_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(report["return_type_counts"]["ground"], 1)
+            self.assertEqual(report["return_type_counts"]["water"], 1)
+            self.assertEqual(report["return_type_counts"]["low_vegetation"], 1)
+            self.assertEqual(report["return_type_counts"]["medium_vegetation"], 1)
+            self.assertEqual(report["return_type_counts"]["high_vegetation"], 1)
+            self.assertEqual(report["return_type_counts"]["building"], 1)
             self.assertEqual(report["software_version"], __version__)
 
     def test_extract_laser_paths_accepts_direct_laz_payload(self) -> None:

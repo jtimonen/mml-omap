@@ -3736,7 +3736,7 @@ def command_ekp(args: argparse.Namespace) -> int:
 def command_kotka_jukola(args: argparse.Namespace) -> int:
     build_args = argparse.Namespace(
         output="builds/examples/kotka-jukola/kymi-airfield",
-        bbox="490800,6711600,497000,6718500",
+        bbox="492200,6712050,496400,6718050",
         api_key=args.api_key,
         api_key_env=args.api_key_env,
         base_url=args.base_url,
@@ -3745,7 +3745,7 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
         theme="maastotietokanta_kaikki",
         work_dir=None,
         mapping=None,
-        scale=10000,
+        scale=15000,
         margin_mm=5.0,
         dpi=300,
         map_title="Kotka-Jukola harjoituskieltoalue",

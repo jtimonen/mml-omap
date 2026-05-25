@@ -5,6 +5,7 @@
 - Keep documentation connected to code changes:
   - CLI workflow, output paths, examples, dependencies, or user-facing command
     changes must update `README.md`.
+  - Released or committed behavior changes must update `CHANGELOG.md`.
   - MML table, `kohdeluokka`, internal object type, or ISOM symbol mapping
     changes must update `docs/mml-to-isom-mapping.md`.
   - Build pipeline, contour, cliff, elevation, vegetation, LiDAR, point-cloud,

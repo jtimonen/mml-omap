@@ -87,7 +87,7 @@ The command writes:
 
 This is centered around Kymin lentokenttä and covers the Kotka-Jukola 2026
 harjoituskieltoalue shown on the event site. The bbox is
-`490800,6711600,497000,6718500` in EPSG:3067 meters.
+`492200,6712050,496400,6718050` in EPSG:3067 meters.
 
 All generated files go under `builds/examples/kotka-jukola/`.
 

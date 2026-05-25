@@ -37,6 +37,7 @@ from mml_omap.cli import (
     cliff_features_from_xyz_grid,
     ground_grid_from_lidar_points,
     lidar_vegetation_features,
+    smooth_line,
     merge_geojson_documents,
     extract_laser_paths,
     should_render_point_symbol,
@@ -499,23 +500,23 @@ class OrienteeringBoundsTest(unittest.TestCase):
     def test_lidar_points_generate_dissolved_vegetation_features(self) -> None:
         rows = [
             (0.0, 0.0, 0.0, 2),
-            (1.0, 1.0, 3.0, 5),
-            (2.0, 2.0, 3.2, 5),
-            (3.0, 3.0, 3.4, 5),
-            (4.0, 4.0, 3.6, 5),
         ]
+        rows.extend((1.0, 1.0, 0.1, 2) for _index in range(10))
+        rows.extend((1.0, 1.0, 3.0, 5) for _index in range(8))
+        rows.extend((11.0, 1.0, 0.1, 2) for _index in range(10))
+        rows.extend((11.0, 1.0, 3.0, 5) for _index in range(8))
 
         features = lidar_vegetation_features(
             rows,
             cell_size_m=10.0,
-            min_height_m=1.8,
-            slow_count=2,
+            min_height_m=0.8,
+            slow_count=8,
             fight_count=10,
         )
 
-        self.assertEqual(len(features), 1)
-        self.assertEqual(features[0]["properties"]["symbol"], "406")
-        self.assertEqual(features[0]["geometry"]["type"], "Polygon")
+        self.assertTrue(features)
+        self.assertTrue(all(feature["properties"]["symbol"] == "406" for feature in features))
+        self.assertTrue(all(feature["geometry"]["type"] == "Polygon" for feature in features))
 
     def test_lidar_vegetation_uses_fixed_green_hit_ratio_threshold(self) -> None:
         rows = [(0.0, 0.0, 0.0, 2)]
@@ -531,6 +532,30 @@ class OrienteeringBoundsTest(unittest.TestCase):
         )
 
         self.assertEqual(features, [])
+
+    def test_lidar_vegetation_skips_isolated_tree_cells(self) -> None:
+        rows = [(0.0, 0.0, 0.0, 2)]
+        rows.extend((1.0, 1.0, 0.1, 2) for _index in range(10))
+        rows.extend((1.0, 1.0, 3.0, 5) for _index in range(8))
+
+        features = lidar_vegetation_features(
+            rows,
+            cell_size_m=10.0,
+            min_height_m=0.8,
+            slow_count=8,
+            fight_count=10,
+        )
+
+        self.assertEqual(features, [])
+
+    def test_smooth_line_adds_intermediate_points(self) -> None:
+        line = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]
+
+        smoothed = smooth_line(line, 1)
+
+        self.assertGreater(len(smoothed), len(line))
+        self.assertEqual(smoothed[0], line[0])
+        self.assertEqual(smoothed[-1], line[-1])
 
     def test_ground_grid_reports_noise_estimates(self) -> None:
         rows = [

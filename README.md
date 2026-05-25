@@ -76,13 +76,28 @@ The command writes:
 
 - `builds/examples/espoo-keskuspuisto/mapant-center-1m.geojson`
 - `builds/examples/espoo-keskuspuisto/mapant-center-1m.png`
-- `builds/examples/espoo-keskuspuisto/mapant-center-1m-lidar-points.png`
 - `builds/examples/espoo-keskuspuisto/mapant-center-1m.pdf`
-- `builds/examples/espoo-keskuspuisto/mapant-center-1m-symbols.pdf`
 - matching `mapant-center-2_5m.*` and `mapant-center-5m.*` outputs
+- `builds/examples/espoo-keskuspuisto/mapant-center-lidar-points.png`
 - `mapant-center-1m-terrain-report.json`, `mapant-center-2_5m-terrain-report.json`,
   and `mapant-center-5m-terrain-report.json`
 - `builds/examples/espoo-keskuspuisto/downloads/`
+
+## Kotka-Jukola Example
+
+This is centered around Kymin lentokenttä and covers the Kotka-Jukola 2026
+harjoituskieltoalue shown on the event site. The bbox is
+`490800,6711600,497000,6718500` in EPSG:3067 meters.
+
+All generated files go under `builds/examples/kotka-jukola/`.
+
+```sh
+uv run mml-omap kotka-jukola
+```
+
+The command writes `kymi-airfield-1m.*`, `kymi-airfield-2_5m.*`, and
+`kymi-airfield-5m.*` map outputs, one shared
+`kymi-airfield-lidar-points.png`, terrain reports, and the source downloads.
 
 ## What It Generates
 

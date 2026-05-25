@@ -30,11 +30,11 @@ report includes the contour interval, downloaded laser sheets, point-cloud grid
 parameters, global and per-cell noise estimates, interpolation distances, and
 generated feature counts.
 
-Each render also writes `*-lidar-points.png`, a diagnostic image of the point
-cloud inside the terrain context bbox. Every observed point is plotted at its
-map position and colored by height with the viridis color ramp. The terrain
-report records the image path, pixel size, point count, and height range used
-for coloring.
+Each source-data build also writes one `*-lidar-points.png` diagnostic image of
+the point cloud inside the terrain context bbox. Every observed point is plotted
+at its map position and colored by height with the viridis color ramp. All
+terrain reports generated from the same source data reference that same image
+path, pixel size, point count, and height range.
 
 ## Ground Model
 
@@ -100,10 +100,11 @@ The classifier follows the same basic threshold shape as Karttapullautin:
 count green hits in a low vegetation band and compare them to near-ground hits
 with fixed global ratio thresholds. The default near-ground limit is 0.8 m, the
 default green-hit band is 0.8-5.0 m, and the default ratio thresholds are 0.68
-for ISOM `406` and 1.13 for ISOM `410`. Minimum hit counts are also required to
-avoid isolated-noise cells. Tall canopy returns do not by themselves create
-green areas. Adjacent cells of the same class are dissolved into polygons with
-Shapely before rendering.
+for ISOM `406` and 1.13 for ISOM `410`. Minimum hit counts are also required.
+Candidate cells are then filtered by continuous region area, so isolated cells
+representing one or two trees are not drawn as green. Tall canopy returns do
+not by themselves create green areas. Adjacent cells of the same class are
+dissolved into polygons with Shapely before rendering.
 
 ## Known Gaps
 

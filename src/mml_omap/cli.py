@@ -123,6 +123,8 @@ DEFAULT_GREEN_SLOW_RATIO = 0.68
 DEFAULT_GREEN_FIGHT_RATIO = 1.13
 DEFAULT_GREEN_MIN_HITS = 8
 DEFAULT_GREEN_FIGHT_MIN_HITS = 24
+DEFAULT_GREEN_MIN_REGION_AREA_M2 = 200.0
+DEFAULT_CONTOUR_SMOOTHING_ITERATIONS = 1
 
 
 def read_json(path: Path) -> Any:
@@ -1314,6 +1316,7 @@ def contour_features_from_xyz_grid(
     max_level: float | None = None,
     simplify_tolerance_m: float = 0.0,
     index_contour_every: int = 5,
+    smoothing_iterations: int = DEFAULT_CONTOUR_SMOOTHING_ITERATIONS,
 ) -> list[dict[str, Any]]:
     import contourpy
     import numpy as np
@@ -1351,6 +1354,7 @@ def contour_features_from_xyz_grid(
         for contour_line in generator.lines(level):
             line = [[float(point[0]), float(point[1])] for point in contour_line]
             line = simplify_line(line, simplify_tolerance_m)
+            line = smooth_line(line, smoothing_iterations)
             if len(line) < 2:
                 continue
             features.append(
@@ -1384,6 +1388,20 @@ def simplify_line(line: list[list[float]], tolerance: float) -> list[list[float]
     if tolerance <= 0 or len(line) <= 2:
         return line
     return douglas_peucker(line, tolerance)
+
+
+def smooth_line(line: list[list[float]], iterations: int) -> list[list[float]]:
+    if iterations <= 0 or len(line) <= 2:
+        return line
+    smoothed = line
+    for _iteration in range(iterations):
+        next_line = [smoothed[0]]
+        for start, end in zip(smoothed, smoothed[1:]):
+            next_line.append([start[0] * 0.75 + end[0] * 0.25, start[1] * 0.75 + end[1] * 0.25])
+            next_line.append([start[0] * 0.25 + end[0] * 0.75, start[1] * 0.25 + end[1] * 0.75])
+        next_line.append(smoothed[-1])
+        smoothed = next_line
+    return smoothed
 
 
 def douglas_peucker(points: list[list[float]], tolerance: float) -> list[list[float]]:
@@ -1841,6 +1859,9 @@ def lidar_vegetation_features(
     for symbol, cells in cells_by_symbol.items():
         if not cells:
             continue
+        cells = continuous_region_cells(cells, min_area_m2=DEFAULT_GREEN_MIN_REGION_AREA_M2)
+        if not cells:
+            continue
         name = "Vegetation: fight" if symbol == "410" else "Vegetation: slow running"
         geometries = dissolve_rectangular_cells(cells)
         for geometry in geometries:
@@ -1862,11 +1883,54 @@ def lidar_vegetation_features(
                         "green_fight_ratio": DEFAULT_GREEN_FIGHT_RATIO,
                         "green_min_hit_count": slow_count,
                         "green_fight_min_hit_count": fight_count,
+                        "green_min_region_area_m2": DEFAULT_GREEN_MIN_REGION_AREA_M2,
                     },
                     "geometry": geometry,
                 }
             )
     return features
+
+
+def continuous_region_cells(
+    cells: list[tuple[float, float, float, float, int]],
+    *,
+    min_area_m2: float,
+) -> list[tuple[float, float, float, float, int]]:
+    if min_area_m2 <= 0:
+        return cells
+    by_cell = {
+        (round(x0, 6), round(y0, 6)): (x0, y0, x1, y1, count)
+        for x0, y0, x1, y1, count in cells
+    }
+    if not by_cell:
+        return []
+    cell_width_m = max(cells[0][2] - cells[0][0], 1e-9)
+    cell_height_m = max(cells[0][3] - cells[0][1], 1e-9)
+    min_cell_count = max(1, math.ceil(min_area_m2 / (cell_width_m * cell_height_m)))
+    kept: list[tuple[float, float, float, float, int]] = []
+    visited: set[tuple[float, float]] = set()
+    for key in by_cell:
+        if key in visited:
+            continue
+        stack = [key]
+        visited.add(key)
+        component: list[tuple[float, float]] = []
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            x, y = current
+            for neighbor in (
+                (round(x - cell_width_m, 6), y),
+                (round(x + cell_width_m, 6), y),
+                (x, round(y - cell_height_m, 6)),
+                (x, round(y + cell_height_m, 6)),
+            ):
+                if neighbor in by_cell and neighbor not in visited:
+                    visited.add(neighbor)
+                    stack.append(neighbor)
+        if len(component) >= min_cell_count:
+            kept.extend(by_cell[cell] for cell in component)
+    return kept
 
 
 def dissolve_rectangular_cells(cells: list[tuple[float, float, float, float, int]]) -> list[dict[str, Any]]:
@@ -3464,6 +3528,7 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "bbox": bbox,
         "terrain_bbox": terrain_bbox,
+        "diagnostic_output": str(output_base),
         "magnetic_declination_deg": magnetic_declination_deg,
         "magnetic_date": magnetic_date.isoformat(),
         "vector_geojson": vector_geojson,
@@ -3557,9 +3622,23 @@ def build_combined_map(args: argparse.Namespace) -> tuple[dict[str, Any], dict[s
 def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
     source_data = build_source_data(args)
+    ensure_lidar_point_report(source_data, output_base)
     combined, report = combined_map_from_source_data(source_data, args, interval_m=args.interval_m)
     render_build_outputs(output_base, combined, report, args, source_data=source_data)
     return 0
+
+
+def ensure_lidar_point_report(source_data: dict[str, Any], output_base: Path) -> dict[str, Any]:
+    existing = source_data.get("lidar_point_height_png")
+    if isinstance(existing, dict):
+        return existing
+    report = render_lidar_height_png(
+        source_data["lidar_rows"],
+        output_base.with_name(output_base.name + "-lidar-points").with_suffix(".png"),
+        bbox=source_data["terrain_bbox"],
+    )
+    source_data["lidar_point_height_png"] = report
+    return report
 
 
 def render_build_outputs(
@@ -3572,12 +3651,7 @@ def render_build_outputs(
 ) -> None:
     geojson_path = output_base.with_suffix(".geojson")
     write_json(geojson_path, combined)
-    lidar_point_report = render_lidar_height_png(
-        source_data["lidar_rows"],
-        output_base.with_name(output_base.name + "-lidar-points").with_suffix(".png"),
-        bbox=source_data["terrain_bbox"],
-    )
-    report["lidar_point_height_png"] = lidar_point_report
+    report["lidar_point_height_png"] = ensure_lidar_point_report(source_data, render_output_base(source_data["diagnostic_output"]))
     write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
     transform = make_render_transform(
         argparse.Namespace(
@@ -3610,18 +3684,6 @@ def render_build_outputs(
         north_line_spacing_m=args.north_line_spacing_m,
         contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
-    render_pdf(
-        combined,
-        output_base.with_name(output_base.name + "-symbols").with_suffix(".pdf"),
-        transform=transform,
-        include_layout=True,
-        map_title_text=args.map_title,
-        map_maker=args.map_maker,
-        contour_interval_m=contour_interval_m,
-        north_line_spacing_m=args.north_line_spacing_m,
-        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
-        include_symbol_numbers=True,
-    )
     print(f"Wrote {geojson_path}, {output_base.with_suffix('.png')}, {output_base.with_suffix('.pdf')}.")
 
 
@@ -3643,7 +3705,7 @@ def command_ekp(args: argparse.Namespace) -> int:
         map_title="Espoon keskuspuisto",
         map_maker="mml-omap",
         interval_m=2.5,
-        contour_simplify_tolerance_m=0.0,
+        contour_simplify_tolerance_m=0.35,
         index_contour_every=5,
         ground_cell_size_m=1.0,
         ground_quantile=0.5,
@@ -3661,6 +3723,53 @@ def command_ekp(args: argparse.Namespace) -> int:
         magnetic_date=None,
     )
     source_data = build_source_data(build_args)
+    ensure_lidar_point_report(source_data, render_output_base(build_args.output))
+    for interval_m in (1.0, 2.5, 5.0):
+        combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
+        output_base = render_output_base(build_args.output).with_name(
+            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        )
+        render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
+    return 0
+
+
+def command_kotka_jukola(args: argparse.Namespace) -> int:
+    build_args = argparse.Namespace(
+        output="builds/examples/kotka-jukola/kymi-airfield",
+        bbox="490800,6711600,497000,6718500",
+        api_key=args.api_key,
+        api_key_env=args.api_key_env,
+        base_url=args.base_url,
+        poll_seconds=args.poll_seconds,
+        timeout_seconds=args.timeout_seconds,
+        theme="maastotietokanta_kaikki",
+        work_dir=None,
+        mapping=None,
+        scale=10000,
+        margin_mm=5.0,
+        dpi=300,
+        map_title="Kotka-Jukola harjoituskieltoalue",
+        map_maker="mml-omap",
+        interval_m=2.5,
+        contour_simplify_tolerance_m=0.35,
+        index_contour_every=5,
+        ground_cell_size_m=1.0,
+        ground_quantile=0.5,
+        ground_smoothing_sigma_m=1.5,
+        terrain_context_margin_m=DEFAULT_TERRAIN_CONTEXT_MARGIN_M,
+        slope_threshold_deg=38.0,
+        min_cliff_length_m=8.0,
+        cell_size_m=4.0,
+        min_height_m=DEFAULT_GREEN_GROUND_HEIGHT_M,
+        slow_count=DEFAULT_GREEN_MIN_HITS,
+        fight_count=DEFAULT_GREEN_FIGHT_MIN_HITS,
+        north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
+        contour_merge_tolerance_m=DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
+        magnetic_declination_deg="auto",
+        magnetic_date=None,
+    )
+    source_data = build_source_data(build_args)
+    ensure_lidar_point_report(source_data, render_output_base(build_args.output))
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -3990,9 +4099,9 @@ def build_parser() -> argparse.ArgumentParser:
     build = subparsers.add_parser(
         "build",
         parents=[common_api],
-        help="Build the combined orienteering map from MML vectors, a ground XYZ grid, and LiDAR points.",
+        help="Build the combined orienteering map from MML vectors and LiDAR point clouds.",
     )
-    build.add_argument("output", help="Output base path. Writes .geojson, .png, .pdf, and -symbols.pdf.")
+    build.add_argument("output", help="Output base path. Writes .geojson, .png, .pdf, -lidar-points.png, and -terrain-report.json.")
     build.add_argument("bbox", help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
     build.add_argument("--theme", default="maastotietokanta_kaikki")
     build.add_argument("--work-dir")
@@ -4003,7 +4112,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--map-title", help="Title text printed in SVG/PDF layout metadata.")
     build.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG/PDF layout metadata.")
     build.add_argument("--interval-m", type=float, default=2.5)
-    build.add_argument("--contour-simplify-tolerance-m", type=float, default=0.0)
+    build.add_argument("--contour-simplify-tolerance-m", type=float, default=0.35)
     build.add_argument("--index-contour-every", type=int, default=5)
     build.add_argument("--ground-cell-size-m", type=float, default=1.0)
     build.add_argument("--ground-quantile", type=float, default=0.5)
@@ -4031,6 +4140,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build the Espoon keskuspuisto example.",
     )
     ekp.set_defaults(func=command_ekp)
+
+    kotka_jukola = subparsers.add_parser(
+        "kotka-jukola",
+        parents=[common_api],
+        help="Build the Kotka-Jukola Kymin lentokenttä example.",
+    )
+    kotka_jukola.set_defaults(func=command_kotka_jukola)
 
     download = subparsers.add_parser("download", parents=[common_api], help="Download MML bbox GeoPackage zip.")
     download.add_argument("output")

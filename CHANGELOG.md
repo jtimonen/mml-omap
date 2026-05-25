@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5
+
+- Renamed built-in example output stems to match the example names:
+  `espoo-keskuspuisto`, `kotka-jukola`, `puijo`, and `vuokatinvaara`.
+- Added built-in `puijo` and `vuokatinvaara` examples at 1:10000 with A4
+  portrait map frames.
+- Removed render-time contour fragment merging so PNG/PDF/SVG outputs use the
+  contour geometry directly generated from the elevation model.
+
 ## 0.1.4
 
 - Added the generated Espoon keskuspuisto PNG as the README demo image.

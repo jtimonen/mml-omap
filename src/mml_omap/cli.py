@@ -1,4 +1,4 @@
-"""Command line interface for exporting MML open data to GeoJSON.
+﻿"""Command line interface for exporting MML open data to GeoJSON.
 
 The primary output is GeoJSON in EPSG:3067 coordinates. When the default mapping
 is enabled, features also get `symbol` and `object_type` properties.
@@ -119,7 +119,6 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
 }
 
 DEFAULT_NORTH_LINE_SPACING_M = 300.0
-DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 20.0
 DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
 MML_LASER_MAP_SHEET_GRID_M = 3000.0
 DEFAULT_MML_JOB_ATTEMPTS = 3
@@ -2118,78 +2117,6 @@ def sorted_render_features(features: list[dict[str, Any]]) -> list[dict[str, Any
     ]
 
 
-def line_parts_from_geometry(geometry: dict[str, Any]) -> list[list[Any]]:
-    geometry_type = geometry.get("type")
-    if geometry_type == "LineString":
-        return [geometry.get("coordinates") or []]
-    if geometry_type == "MultiLineString":
-        return list(geometry.get("coordinates") or [])
-    return []
-
-
-def line_endpoint_distance(a: Any, b: Any) -> float:
-    return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
-
-
-def append_connected_line(base: list[Any], candidate: list[Any], tolerance_m: float) -> list[Any] | None:
-    if not base or not candidate:
-        return None
-    options = [
-        (line_endpoint_distance(base[-1], candidate[0]), base + candidate[1:]),
-        (line_endpoint_distance(base[-1], candidate[-1]), base + list(reversed(candidate[:-1]))),
-        (line_endpoint_distance(base[0], candidate[-1]), candidate[:-1] + base),
-        (line_endpoint_distance(base[0], candidate[0]), list(reversed(candidate[1:])) + base),
-    ]
-    distance, merged = min(options, key=lambda item: item[0])
-    return merged if distance <= tolerance_m else None
-
-
-def merge_lines_by_endpoint(lines: list[list[Any]], tolerance_m: float) -> list[list[Any]]:
-    merged = [list(line) for line in lines if len(line) > 1]
-    changed = True
-    while changed:
-        changed = False
-        for index in range(len(merged)):
-            if changed:
-                break
-            for other_index in range(index + 1, len(merged)):
-                connected = append_connected_line(merged[index], merged[other_index], tolerance_m)
-                if connected is None:
-                    continue
-                merged[index] = connected
-                del merged[other_index]
-                changed = True
-                break
-    return merged
-
-
-def merge_contour_features(features: list[dict[str, Any]], tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M) -> list[dict[str, Any]]:
-    if tolerance_m <= 0:
-        return features
-    output: list[dict[str, Any]] = []
-    contour_groups: dict[Any, dict[str, Any]] = {}
-    for feature in features:
-        if feature_symbol(feature) != "contour":
-            output.append(feature)
-            continue
-        properties = feature.get("properties") or {}
-        key = properties.get("korkeusarvo")
-        group = contour_groups.setdefault(key, {"template": feature, "lines": []})
-        group["lines"].extend(line_parts_from_geometry(feature.get("geometry") or {}))
-    for group in contour_groups.values():
-        lines = merge_lines_by_endpoint(group["lines"], tolerance_m)
-        if not lines:
-            continue
-        template = group["template"]
-        properties = dict(template.get("properties") or {})
-        properties["merged_parts"] = len(group["lines"])
-        geometry = {"type": "LineString", "coordinates": lines[0]}
-        if len(lines) > 1:
-            geometry = {"type": "MultiLineString", "coordinates": lines}
-        output.append({"type": "Feature", "properties": properties, "geometry": geometry})
-    return output
-
-
 def dedupe_label_features(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     seen: set[tuple[str, str, int, int]] = set()
@@ -2211,9 +2138,8 @@ def dedupe_label_features(features: list[dict[str, Any]]) -> list[dict[str, Any]
     return output
 
 
-def prepare_render_features(geojson: dict[str, Any], contour_merge_tolerance_m: float) -> list[dict[str, Any]]:
-    features = merge_contour_features(geojson_features(geojson), contour_merge_tolerance_m)
-    return sorted_render_features(dedupe_label_features(features))
+def prepare_render_features(geojson: dict[str, Any]) -> list[dict[str, Any]]:
+    return sorted_render_features(dedupe_label_features(geojson_features(geojson)))
 
 
 def iter_geometry_parts(geometry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2421,9 +2347,8 @@ def render_svg(
     map_maker: str = "mml-omap",
     contour_interval_m: float = 5.0,
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
-    contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
-    features = prepare_render_features(geojson, contour_merge_tolerance_m)
+    features = prepare_render_features(geojson)
     progress(f"Rendering SVG with {len(features)} features...")
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -2924,14 +2849,13 @@ def render_png_with_pillow(
     map_maker: str,
     contour_interval_m: float,
     north_line_spacing_m: float,
-    contour_merge_tolerance_m: float,
 ) -> bool:
     try:
         from PIL import Image, ImageDraw
     except ImportError:
         return False
 
-    features = prepare_render_features(geojson, contour_merge_tolerance_m)
+    features = prepare_render_features(geojson)
     progress(f"Rendering PNG with Pillow: {len(features)} features at {dpi} dpi...")
     width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
     height = max(1, int(round(transform.page_height_mm / 25.4 * dpi)))
@@ -3062,7 +2986,6 @@ def render_png(
     map_maker: str = "mml-omap",
     contour_interval_m: float = 5.0,
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
-    contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
 ) -> None:
     if render_png_with_pillow(
         geojson,
@@ -3074,10 +2997,9 @@ def render_png(
         map_maker=map_maker,
         contour_interval_m=contour_interval_m,
         north_line_spacing_m=north_line_spacing_m,
-        contour_merge_tolerance_m=contour_merge_tolerance_m,
     ):
         return
-    features = prepare_render_features(geojson, contour_merge_tolerance_m)
+    features = prepare_render_features(geojson)
     progress(f"Rendering PNG with {len(features)} features at {dpi} dpi...")
     width = max(1, int(round(transform.page_width_mm / 25.4 * dpi)))
     height = max(1, int(round(transform.page_height_mm / 25.4 * dpi)))
@@ -3389,10 +3311,9 @@ def render_pdf(
     map_maker: str = "mml-omap",
     contour_interval_m: float = 5.0,
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
-    contour_merge_tolerance_m: float = DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
     include_symbol_numbers: bool = False,
 ) -> None:
-    features = prepare_render_features(geojson, contour_merge_tolerance_m)
+    features = prepare_render_features(geojson)
     progress(f"Rendering PDF with {len(features)} features...")
     page_width = transform.page_width_mm * 72.0 / 25.4
     page_height = transform.page_height_mm * 72.0 / 25.4
@@ -3870,7 +3791,6 @@ def render_build_outputs(
         map_maker=args.map_maker,
         contour_interval_m=contour_interval_m,
         north_line_spacing_m=args.north_line_spacing_m,
-        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
     render_pdf(
         combined,
@@ -3881,14 +3801,13 @@ def render_build_outputs(
         map_maker=args.map_maker,
         contour_interval_m=contour_interval_m,
         north_line_spacing_m=args.north_line_spacing_m,
-        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
     print(f"Wrote {geojson_path}, {output_base.with_suffix('.png')}, {output_base.with_suffix('.pdf')}.")
 
 
 def command_ekp(args: argparse.Namespace) -> int:
     build_args = argparse.Namespace(
-        output="builds/examples/espoo-keskuspuisto/mapant-center",
+        output="builds/examples/espoo-keskuspuisto/espoo-keskuspuisto",
         bbox="371255,6673869,373305,6675299",
         api_key=args.api_key,
         api_key_env=args.api_key_env,
@@ -3916,7 +3835,6 @@ def command_ekp(args: argparse.Namespace) -> int:
         slow_count=DEFAULT_GREEN_MIN_HITS,
         fight_count=DEFAULT_GREEN_FIGHT_MIN_HITS,
         north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
-        contour_merge_tolerance_m=DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
         magnetic_declination_deg="auto",
         magnetic_date=None,
     )
@@ -3933,7 +3851,7 @@ def command_ekp(args: argparse.Namespace) -> int:
 
 def command_kotka_jukola(args: argparse.Namespace) -> int:
     build_args = argparse.Namespace(
-        output="builds/examples/kotka-jukola/kymi-airfield",
+        output="builds/examples/kotka-jukola/kotka-jukola",
         bbox="492900,6713000,495700,6717100",
         api_key=args.api_key,
         api_key_env=args.api_key_env,
@@ -3961,7 +3879,94 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
         slow_count=DEFAULT_GREEN_MIN_HITS,
         fight_count=DEFAULT_GREEN_FIGHT_MIN_HITS,
         north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
-        contour_merge_tolerance_m=DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
+        magnetic_declination_deg="auto",
+        magnetic_date=None,
+    )
+    source_data = build_source_data(build_args)
+    ensure_lidar_point_report(source_data, render_output_base(build_args.output), build_args)
+    for interval_m in (1.0, 2.5, 5.0):
+        combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
+        output_base = render_output_base(build_args.output).with_name(
+            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        )
+        render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
+    return 0
+
+
+def command_puijo(args: argparse.Namespace) -> int:
+    build_args = argparse.Namespace(
+        output="builds/examples/puijo/puijo",
+        bbox="532322,6974301,534322,6977101",
+        api_key=args.api_key,
+        api_key_env=args.api_key_env,
+        base_url=args.base_url,
+        poll_seconds=args.poll_seconds,
+        timeout_seconds=args.timeout_seconds,
+        theme="maastotietokanta_kaikki",
+        work_dir=None,
+        mapping=None,
+        scale=10000,
+        margin_mm=5.0,
+        dpi=300,
+        map_title="Puijo",
+        map_maker="mml-omap",
+        interval_m=2.5,
+        index_contour_every=5,
+        ground_cell_size_m=1.0,
+        ground_quantile=0.5,
+        ground_smoothing_sigma_m=1.5,
+        terrain_context_margin_m=DEFAULT_TERRAIN_CONTEXT_MARGIN_M,
+        slope_threshold_deg=38.0,
+        min_cliff_length_m=8.0,
+        cell_size_m=4.0,
+        min_height_m=DEFAULT_GREEN_GROUND_HEIGHT_M,
+        slow_count=DEFAULT_GREEN_MIN_HITS,
+        fight_count=DEFAULT_GREEN_FIGHT_MIN_HITS,
+        north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
+        magnetic_declination_deg="auto",
+        magnetic_date=None,
+    )
+    source_data = build_source_data(build_args)
+    ensure_lidar_point_report(source_data, render_output_base(build_args.output), build_args)
+    for interval_m in (1.0, 2.5, 5.0):
+        combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
+        output_base = render_output_base(build_args.output).with_name(
+            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        )
+        render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
+    return 0
+
+
+def command_vuokatinvaara(args: argparse.Namespace) -> int:
+    build_args = argparse.Namespace(
+        output="builds/examples/vuokatinvaara/vuokatinvaara",
+        bbox="560649,7112274,562649,7115074",
+        api_key=args.api_key,
+        api_key_env=args.api_key_env,
+        base_url=args.base_url,
+        poll_seconds=args.poll_seconds,
+        timeout_seconds=args.timeout_seconds,
+        theme="maastotietokanta_kaikki",
+        work_dir=None,
+        mapping=None,
+        scale=10000,
+        margin_mm=5.0,
+        dpi=300,
+        map_title="Vuokatinvaara",
+        map_maker="mml-omap",
+        interval_m=2.5,
+        index_contour_every=5,
+        ground_cell_size_m=1.0,
+        ground_quantile=0.5,
+        ground_smoothing_sigma_m=1.5,
+        terrain_context_margin_m=DEFAULT_TERRAIN_CONTEXT_MARGIN_M,
+        slope_threshold_deg=38.0,
+        min_cliff_length_m=8.0,
+        cell_size_m=4.0,
+        min_height_m=DEFAULT_GREEN_GROUND_HEIGHT_M,
+        slow_count=DEFAULT_GREEN_MIN_HITS,
+        fight_count=DEFAULT_GREEN_FIGHT_MIN_HITS,
+        north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
         magnetic_declination_deg="auto",
         magnetic_date=None,
     )
@@ -4184,7 +4189,6 @@ def command_render_svg(args: argparse.Namespace) -> int:
         map_maker=args.map_maker,
         contour_interval_m=resolve_contour_interval_m(args.contour_interval_m, clipped_geojson),
         north_line_spacing_m=args.north_line_spacing_m,
-        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
     return 0
 
@@ -4203,7 +4207,6 @@ def command_render_png(args: argparse.Namespace) -> int:
         map_maker=args.map_maker,
         contour_interval_m=resolve_contour_interval_m(args.contour_interval_m, clipped_geojson),
         north_line_spacing_m=args.north_line_spacing_m,
-        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
     return 0
 
@@ -4221,7 +4224,6 @@ def command_render_pdf(args: argparse.Namespace) -> int:
         map_maker=args.map_maker,
         contour_interval_m=resolve_contour_interval_m(args.contour_interval_m, clipped_geojson),
         north_line_spacing_m=args.north_line_spacing_m,
-        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
         include_symbol_numbers=getattr(args, "symbol_numbers", False),
     )
     return 0
@@ -4248,7 +4250,6 @@ def command_render(args: argparse.Namespace) -> int:
         map_maker=args.map_maker,
         contour_interval_m=contour_interval_m,
         north_line_spacing_m=args.north_line_spacing_m,
-        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
     render_pdf(
         clipped_geojson,
@@ -4259,7 +4260,6 @@ def command_render(args: argparse.Namespace) -> int:
         map_maker=args.map_maker,
         contour_interval_m=contour_interval_m,
         north_line_spacing_m=args.north_line_spacing_m,
-        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
     )
     render_pdf(
         clipped_geojson,
@@ -4270,7 +4270,6 @@ def command_render(args: argparse.Namespace) -> int:
         map_maker=args.map_maker,
         contour_interval_m=contour_interval_m,
         north_line_spacing_m=args.north_line_spacing_m,
-        contour_merge_tolerance_m=args.contour_merge_tolerance_m,
         include_symbol_numbers=True,
     )
     return 0
@@ -4325,7 +4324,6 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--slow-count", type=int, default=DEFAULT_GREEN_MIN_HITS)
     build.add_argument("--fight-count", type=int, default=DEFAULT_GREEN_FIGHT_MIN_HITS)
     build.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
-    build.add_argument("--contour-merge-tolerance-m", type=float, default=DEFAULT_CONTOUR_MERGE_TOLERANCE_M)
     build.add_argument(
         "--magnetic-declination-deg",
         default="auto",
@@ -4344,9 +4342,23 @@ def build_parser() -> argparse.ArgumentParser:
     kotka_jukola = subparsers.add_parser(
         "kotka-jukola",
         parents=[common_api],
-        help="Build the Kotka-Jukola Kymin lentokenttä example.",
+        help="Build the Kotka-Jukola Kymi airfield example.",
     )
     kotka_jukola.set_defaults(func=command_kotka_jukola)
+
+    puijo = subparsers.add_parser(
+        "puijo",
+        parents=[common_api],
+        help="Build the Puijo example around Puijon torni.",
+    )
+    puijo.set_defaults(func=command_puijo)
+
+    vuokatinvaara = subparsers.add_parser(
+        "vuokatinvaara",
+        parents=[common_api],
+        help="Build the Vuokatinvaara example.",
+    )
+    vuokatinvaara.set_defaults(func=command_vuokatinvaara)
 
     download = subparsers.add_parser("download", parents=[common_api], help="Download MML bbox GeoPackage zip.")
     download.add_argument("output")
@@ -4489,12 +4501,6 @@ def build_parser() -> argparse.ArgumentParser:
     common_render.add_argument("--map-title", help="Title text printed in SVG/PDF layout metadata.")
     common_render.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG/PDF layout metadata.")
     common_render.add_argument("--contour-interval-m", default="auto", help="Contour interval label for SVG/PDF layout metadata, or auto.")
-    common_render.add_argument(
-        "--contour-merge-tolerance-m",
-        type=float,
-        default=DEFAULT_CONTOUR_MERGE_TOLERANCE_M,
-        help="Join same-elevation contour fragments with endpoints this many meters apart before rendering.",
-    )
     common_render.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
     common_render.add_argument("--no-layout", action="store_true", help="Render only map geometry, without title, footer, frame, or north lines.")
     common_render.add_argument(

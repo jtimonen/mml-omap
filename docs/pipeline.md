@@ -120,9 +120,9 @@ The intentional simplification is only in the mathematical ground model:
 multiple returns become one continuous estimated surface, empty cells are
 interpolated, and the surface is noise-weighted and smoothed before contour
 extraction. The generated contour geometry is taken directly from that
-estimated surface. No post-contour geometry smoothing or line simplification is
-applied. Every `--index-contour-every` contour is written as ISOM `102` index
-contour; the others are ISOM `101`.
+estimated surface. No post-contour geometry smoothing, simplification, or
+fragment merging is applied. Every `--index-contour-every` contour is written as
+ISOM `102` index contour; the others are ISOM `101`.
 
 ## Cliffs
 

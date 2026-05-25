@@ -1,4 +1,4 @@
-# mml-omap
+﻿# mml-omap
 
 ![Espoon keskuspuisto demo map](docs/ekp.png)
 
@@ -76,18 +76,19 @@ uv run mml-omap ekp
 
 The command writes:
 
-- `builds/examples/espoo-keskuspuisto/mapant-center-1m.geojson`
-- `builds/examples/espoo-keskuspuisto/mapant-center-1m.png`
-- `builds/examples/espoo-keskuspuisto/mapant-center-1m.pdf`
-- matching `mapant-center-2_5m.*` and `mapant-center-5m.*` outputs
-- `builds/examples/espoo-keskuspuisto/mapant-center-lidar-points.png`
-- `mapant-center-1m-terrain-report.json`, `mapant-center-2_5m-terrain-report.json`,
-  and `mapant-center-5m-terrain-report.json`
+- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.geojson`
+- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.png`
+- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.pdf`
+- matching `espoo-keskuspuisto-2_5m.*` and `espoo-keskuspuisto-5m.*` outputs
+- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-lidar-points.png`
+- `espoo-keskuspuisto-1m-terrain-report.json`,
+  `espoo-keskuspuisto-2_5m-terrain-report.json`, and
+  `espoo-keskuspuisto-5m-terrain-report.json`
 - `builds/examples/espoo-keskuspuisto/downloads/`
 
 ## Kotka-Jukola Example
 
-This 1:10000 example is centered around Kymin lentokenttä and covers part of
+This 1:10000 example is centered around Kymi airfield and covers part of
 the Kotka-Jukola 2026 harjoituskieltoalue shown on the event site. The bbox is
 `492900,6713000,495700,6717100` in EPSG:3067 meters.
 
@@ -97,9 +98,36 @@ All generated files go under `builds/examples/kotka-jukola/`.
 uv run mml-omap kotka-jukola
 ```
 
-The command writes `kymi-airfield-1m.*`, `kymi-airfield-2_5m.*`, and
-`kymi-airfield-5m.*` map outputs, one shared
-`kymi-airfield-lidar-points.png`, terrain reports, and the source downloads.
+The command writes `kotka-jukola-1m.*`, `kotka-jukola-2_5m.*`, and
+`kotka-jukola-5m.*` map outputs, one shared
+`kotka-jukola-lidar-points.png`, terrain reports, and the source downloads.
+
+## Puijo Example
+
+This 1:10000 example is around Puijon torni and fits on A4 portrait. The bbox
+is `532322,6974301,534322,6977101` in EPSG:3067 meters.
+
+```sh
+uv run mml-omap puijo
+```
+
+The command writes `puijo-1m.*`, `puijo-2_5m.*`, and `puijo-5m.*` map outputs,
+one shared `puijo-lidar-points.png`, terrain reports, and the source downloads
+under `builds/examples/puijo/`.
+
+## Vuokatinvaara Example
+
+This 1:10000 example is around Vuokatinvaara and fits on A4 portrait. The bbox
+is `560649,7112274,562649,7115074` in EPSG:3067 meters.
+
+```sh
+uv run mml-omap vuokatinvaara
+```
+
+The command writes `vuokatinvaara-1m.*`, `vuokatinvaara-2_5m.*`, and
+`vuokatinvaara-5m.*` map outputs, one shared
+`vuokatinvaara-lidar-points.png`, terrain reports, and the source downloads
+under `builds/examples/vuokatinvaara/`.
 
 ## What It Generates
 

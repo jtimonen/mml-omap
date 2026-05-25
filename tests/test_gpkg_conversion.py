@@ -27,7 +27,6 @@ from mml_omap.cli import (
     geojson_map_frame_declination,
     infer_contour_interval_m,
     iof_symbol_metadata,
-    merge_contour_features,
     read_env_file_value,
     render_lidar_height_png,
     render_output_base,
@@ -450,26 +449,6 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertEqual(render_output_base("map"), Path("map"))
         self.assertEqual(render_output_base("map.pdf"), Path("map"))
         self.assertEqual(render_output_base("map.png"), Path("map"))
-
-    def test_contour_fragments_with_same_height_are_merged_for_rendering(self) -> None:
-        features = [
-            {
-                "type": "Feature",
-                "properties": {"symbol": "contour", "korkeusarvo": 25000},
-                "geometry": {"type": "LineString", "coordinates": [[0, 0], [10, 0]]},
-            },
-            {
-                "type": "Feature",
-                "properties": {"symbol": "contour", "korkeusarvo": 25000},
-                "geometry": {"type": "LineString", "coordinates": [[10.5, 0], [20, 0]]},
-            },
-        ]
-
-        merged = merge_contour_features(features, tolerance_m=1.0)
-
-        self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0]["geometry"]["type"], "LineString")
-        self.assertEqual(merged[0]["geometry"]["coordinates"], [[0, 0], [10, 0], [20, 0]])
 
     def test_contour_interval_is_inferred_from_mml_height_values(self) -> None:
         geojson = {

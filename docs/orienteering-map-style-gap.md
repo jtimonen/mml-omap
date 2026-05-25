@@ -33,7 +33,9 @@ does not imply green; normal runnable forest is white on an orienteering map.
 `--include-forest-mask` exists for experimentation. It maps MML
 `metsamaankasvillisuus` polygons to ISOM `406` so the map can show a green
 forest proxy. This is useful for visual comparison with MapAnt, but it should
-not be treated as finished vegetation mapping.
+not be treated as finished vegetation mapping. The renderer also refuses to draw
+area vegetation symbols as point circles, so malformed area-as-point features do
+not appear as random green dots in white forest.
 
 Orienteering map style vegetation requires LiDAR or another density source. A
 future implementation should:
@@ -58,8 +60,14 @@ source-data breaks, and edge cuts. From those lines alone the program cannot
 guarantee a globally consistent height field where every point's relative
 height can be inferred from every other point.
 
-The `contours-from-xyz` command is the first LiDAR-oriented contour path in this
-project. It expects a regular ground-elevation XYZ grid produced from LiDAR or
-DEM data, then generates ISOM `101` contour GeoJSON from that grid. This keeps
-the height model as the source of truth instead of trying to repair broken
-source contour vectors.
+The LiDAR-oriented terrain commands expect a ground-elevation XYZ grid produced
+from LiDAR or DEM data, plus optional LAS/LAZ points for vegetation. They can
+generate:
+
+- `contours-from-xyz`: ISOM `101` contours from the height model
+- `cliffs-from-xyz`: candidate ISOM `202` cliffs from steep slope bands
+- `vegetation-from-lidar`: candidate `406`/`410` vegetation from point density
+- `terrain-from-lidar`: a combined GeoJSON with contours, cliffs, and vegetation
+
+This keeps the height model and point cloud as the source of truth instead of
+trying to repair broken source contour or cliff vectors.

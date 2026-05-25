@@ -10,9 +10,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "certifi>=2025.11.12",
+  "laspy[lazrs]>=2.6",
   "matplotlib>=3.9",
   "numpy>=2.0",
   "pillow>=12.2",
+  "shapely>=2.0",
 ]
 license = "MIT"
 authors = [

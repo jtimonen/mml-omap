@@ -1180,6 +1180,272 @@ def contour_features_from_xyz_grid(
     return features
 
 
+def grid_spacing(values: list[float]) -> float:
+    differences = [values[index] - values[index - 1] for index in range(1, len(values))]
+    positive = [value for value in differences if value > 0]
+    if not positive:
+        raise ValueError("Grid values must contain at least two distinct coordinates")
+    return min(positive)
+
+
+def grid_corner_segments(
+    xs: list[float],
+    ys: list[float],
+    values: dict[tuple[float, float], float],
+    *,
+    level: float,
+) -> list[tuple[list[float], list[float]]]:
+    segments: list[tuple[list[float], list[float]]] = []
+    for x0, x1 in zip(xs, xs[1:]):
+        for y0, y1 in zip(ys, ys[1:]):
+            required = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+            if any(point not in values for point in required):
+                continue
+            corners = [(x, y, values[(x, y)]) for x, y in required]
+            cell_values = [corner[2] for corner in corners]
+            if level < min(cell_values) or level > max(cell_values):
+                continue
+            segments.extend(contour_cell_segments(corners, level))
+    return segments
+
+
+def slope_degrees_from_xyz_grid(
+    xs: list[float],
+    ys: list[float],
+    points: dict[tuple[float, float], float],
+) -> dict[tuple[float, float], float]:
+    dx = grid_spacing(xs)
+    dy = grid_spacing(ys)
+    slopes: dict[tuple[float, float], float] = {}
+    for x_index, x in enumerate(xs):
+        for y_index, y in enumerate(ys):
+            left = xs[max(x_index - 1, 0)]
+            right = xs[min(x_index + 1, len(xs) - 1)]
+            down = ys[max(y_index - 1, 0)]
+            up = ys[min(y_index + 1, len(ys) - 1)]
+            required = [(left, y), (right, y), (x, down), (x, up)]
+            if any(point not in points for point in required):
+                continue
+            local_dx = right - left if right != left else dx
+            local_dy = up - down if up != down else dy
+            dz_dx = (points[(right, y)] - points[(left, y)]) / local_dx
+            dz_dy = (points[(x, up)] - points[(x, down)]) / local_dy
+            slopes[(x, y)] = math.degrees(math.atan(math.hypot(dz_dx, dz_dy)))
+    return slopes
+
+
+def cliff_features_from_xyz_grid(
+    xs: list[float],
+    ys: list[float],
+    points: dict[tuple[float, float], float],
+    *,
+    slope_threshold_deg: float,
+    min_length_m: float,
+) -> list[dict[str, Any]]:
+    slopes = slope_degrees_from_xyz_grid(xs, ys, points)
+    lines = stitch_segments(grid_corner_segments(xs, ys, slopes, level=slope_threshold_deg))
+    features = []
+    for line in lines:
+        length = line_length_m(line)
+        if length < min_length_m:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "source": "LiDAR-derived elevation grid",
+                    "source_table": "lidar_xyz_grid",
+                    "object_type": "line",
+                    "symbol": "202",
+                    "iof_symbol_number": "202",
+                    "iof_symbol_name": "Cliff",
+                    "slope_threshold_deg": slope_threshold_deg,
+                },
+                "geometry": {"type": "LineString", "coordinates": line},
+            }
+        )
+    return features
+
+
+def line_length_m(line: list[list[float]]) -> float:
+    length = 0.0
+    for a, b in zip(line, line[1:]):
+        length += math.hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+    return length
+
+
+def read_lidar_point_rows(path: Path) -> list[tuple[float, float, float, int | None]]:
+    if path.suffix.lower() in {".las", ".laz"}:
+        try:
+            import laspy
+        except ImportError as exc:
+            raise RuntimeError("LAS/LAZ input requires the laspy[lazrs] dependency") from exc
+        las = laspy.read(path)
+        classifications = getattr(las, "classification", [None] * len(las.x))
+        return [
+            (float(x), float(y), float(z), int(classification) if classification is not None else None)
+            for x, y, z, classification in zip(las.x, las.y, las.z, classifications)
+        ]
+    rows: list[tuple[float, float, float, int | None]] = []
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part for part in line.replace(",", " ").split() if part]
+        if len(parts) < 3:
+            raise ValueError(f"Invalid point row at {path}:{line_number}")
+        try:
+            classification = int(float(parts[3])) if len(parts) > 3 else None
+            rows.append((float(parts[0]), float(parts[1]), float(parts[2]), classification))
+        except ValueError as exc:
+            if line_number == 1:
+                continue
+            raise ValueError(f"Invalid numeric point row at {path}:{line_number}") from exc
+    if not rows:
+        raise ValueError("Point input did not contain any points")
+    return rows
+
+
+def lidar_vegetation_features(
+    rows: list[tuple[float, float, float, int | None]],
+    *,
+    cell_size_m: float,
+    min_height_m: float,
+    slow_count: int,
+    fight_count: int,
+) -> list[dict[str, Any]]:
+    if cell_size_m <= 0:
+        raise ValueError("--cell-size-m must be greater than zero")
+    min_x = min(row[0] for row in rows)
+    min_y = min(row[1] for row in rows)
+    ground: dict[tuple[int, int], float] = {}
+    vegetation_counts: dict[tuple[int, int], int] = {}
+    for x, y, z, classification in rows:
+        cell = (math.floor((x - min_x) / cell_size_m), math.floor((y - min_y) / cell_size_m))
+        if classification == 2 or cell not in ground or z < ground[cell]:
+            ground[cell] = z
+    for x, y, z, classification in rows:
+        if classification == 2:
+            continue
+        cell = (math.floor((x - min_x) / cell_size_m), math.floor((y - min_y) / cell_size_m))
+        ground_z = ground.get(cell)
+        if ground_z is None:
+            continue
+        if z - ground_z >= min_height_m:
+            vegetation_counts[cell] = vegetation_counts.get(cell, 0) + 1
+    cells_by_symbol: dict[str, list[tuple[float, float, float, float, int]]] = {"406": [], "410": []}
+    for (cell_x, cell_y), count in vegetation_counts.items():
+        if count < slow_count:
+            continue
+        symbol = "410" if count >= fight_count else "406"
+        x0 = min_x + cell_x * cell_size_m
+        y0 = min_y + cell_y * cell_size_m
+        x1 = x0 + cell_size_m
+        y1 = y0 + cell_size_m
+        cells_by_symbol[symbol].append((x0, y0, x1, y1, count))
+    features: list[dict[str, Any]] = []
+    for symbol, cells in cells_by_symbol.items():
+        if not cells:
+            continue
+        name = "Vegetation: fight" if symbol == "410" else "Vegetation: slow running"
+        geometries = dissolve_rectangular_cells(cells)
+        for geometry in geometries:
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "source": "LiDAR point cloud",
+                        "source_table": "lidar_points",
+                        "object_type": "area",
+                        "symbol": symbol,
+                        "iof_symbol_number": symbol,
+                        "iof_symbol_name": name,
+                        "cell_size_m": cell_size_m,
+                    },
+                    "geometry": geometry,
+                }
+            )
+    return features
+
+
+def dissolve_rectangular_cells(cells: list[tuple[float, float, float, float, int]]) -> list[dict[str, Any]]:
+    try:
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+    except ImportError:
+        return [
+            {
+                "type": "Polygon",
+                "coordinates": [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]],
+            }
+            for x0, y0, x1, y1, _count in cells
+        ]
+    polygons = [
+        Polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        for x0, y0, x1, y1, _count in cells
+    ]
+    dissolved = unary_union(polygons)
+    shapely_geometries = list(dissolved.geoms) if hasattr(dissolved, "geoms") else [dissolved]
+    output = []
+    for geometry in shapely_geometries:
+        if geometry.is_empty:
+            continue
+        if geometry.geom_type == "Polygon":
+            output.append(shapely_polygon_to_geojson(geometry))
+    return output
+
+
+def shapely_polygon_to_geojson(polygon: Any) -> dict[str, Any]:
+    exterior = [[float(x), float(y)] for x, y in polygon.exterior.coords]
+    holes = [
+        [[float(x), float(y)] for x, y in interior.coords]
+        for interior in polygon.interiors
+    ]
+    return {
+        "type": "Polygon",
+        "coordinates": [exterior, *holes],
+    }
+
+
+def combined_terrain_geojson(
+    *,
+    contour_features: list[dict[str, Any]],
+    cliff_features: list[dict[str, Any]],
+    vegetation_features: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "type": "FeatureCollection",
+        "name": "mml-omap-lidar-terrain",
+        "crs": {"type": "name", "properties": {"name": "EPSG:3067"}},
+        "features": [*vegetation_features, *contour_features, *cliff_features],
+    }
+
+
+def add_map_frame_if_requested(
+    geojson: dict[str, Any],
+    *,
+    bbox_raw: str | None,
+    magnetic_declination_deg_raw: str,
+    magnetic_date_raw: str | None,
+) -> dict[str, Any]:
+    if not bbox_raw:
+        return geojson
+    bbox = parse_orienteering_bbox(bbox_raw)
+    magnetic_date = parse_date(magnetic_date_raw)
+    magnetic_declination_deg = resolve_magnetic_declination_deg(
+        magnetic_declination_deg_raw,
+        bbox=bbox,
+        magnetic_date=magnetic_date.isoformat(),
+    )
+    output = clip_geojson_to_frame(geojson, OrientedFrame(bbox, magnetic_declination_deg))
+    output["map_frame"] = {
+        "bbox": bbox,
+        "magnetic_declination_deg": magnetic_declination_deg,
+        "magnetic_date": magnetic_date.isoformat(),
+    }
+    return output
+
+
 class RenderTransform:
     def __init__(
         self,
@@ -1280,6 +1546,14 @@ def feature_label_text(feature: dict[str, Any]) -> str | None:
         return None
     text = (feature.get("properties") or {}).get("teksti")
     return str(text) if text else None
+
+
+def should_render_point_symbol(feature: dict[str, Any]) -> bool:
+    properties = feature.get("properties") or {}
+    object_type = properties.get("object_type")
+    if object_type is not None and object_type != "point":
+        return False
+    return feature_symbol(feature) in {"mapped_rock"} or object_type == "point"
 
 
 def feature_render_order(feature: dict[str, Any]) -> int:
@@ -1653,6 +1927,8 @@ def render_svg(
                         f'font-style="{font_style}" fill="{fill}">{html.escape(label)}</text>'
                     )
                 else:
+                    if not should_render_point_symbol(feature):
+                        continue
                     radius = point_radius_mm(style)
                     point_fill = fill if fill != "none" else stroke
                     lines.append(f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{radius:.3f}" fill="{point_fill}"/>')
@@ -1921,6 +2197,8 @@ def render_png_with_pillow(
             elif part["type"] == "Point":
                 if feature_label_text(feature):
                     continue
+                if not should_render_point_symbol(feature):
+                    continue
                 color = fill or stroke or (0, 0, 0)
                 radius = max(2, int(round(point_radius_mm(style) * px_per_mm)))
                 x, y = to_px(part.get("coordinates"))
@@ -2013,6 +2291,8 @@ def render_png(
                         draw_line(canvas, width, height, a, b, layer_stroke, layer_px)
             elif part["type"] == "Point":
                 if feature_label_text(feature):
+                    continue
+                if not should_render_point_symbol(feature):
                     continue
                 color = fill or stroke or (0, 0, 0)
                 radius_px = max(2, int(round(point_radius_mm(style) * px_per_mm)))
@@ -2312,6 +2592,8 @@ def render_pdf(
             elif part["type"] == "Point":
                 if append_pdf_label(commands, feature, part, style, transform):
                     continue
+                if not should_render_point_symbol(feature):
+                    continue
                 color = fill or stroke or (0, 0, 0)
                 commands.append(pdf_color_operator(color, stroke=False))
                 x, y = pdf_point(transform, part.get("coordinates"))
@@ -2514,6 +2796,100 @@ def command_contours_from_xyz(args: argparse.Namespace) -> int:
         }
     write_json(Path(args.output), geojson)
     print(f"Wrote {len(geojson['features'])} LiDAR-derived contour features.")
+    return 0
+
+
+def command_cliffs_from_xyz(args: argparse.Namespace) -> int:
+    xs, ys, points = read_xyz_grid(Path(args.input))
+    features = cliff_features_from_xyz_grid(
+        xs,
+        ys,
+        points,
+        slope_threshold_deg=args.slope_threshold_deg,
+        min_length_m=args.min_length_m,
+    )
+    geojson: dict[str, Any] = {
+        "type": "FeatureCollection",
+        "name": "mml-omap-lidar-cliffs",
+        "crs": {"type": "name", "properties": {"name": "EPSG:3067"}},
+        "features": features,
+    }
+    write_json(Path(args.output), geojson)
+    print(f"Wrote {len(features)} LiDAR-derived cliff features.")
+    return 0
+
+
+def command_vegetation_from_lidar(args: argparse.Namespace) -> int:
+    rows = read_lidar_point_rows(Path(args.input))
+    features = lidar_vegetation_features(
+        rows,
+        cell_size_m=args.cell_size_m,
+        min_height_m=args.min_height_m,
+        slow_count=args.slow_count,
+        fight_count=args.fight_count,
+    )
+    geojson: dict[str, Any] = {
+        "type": "FeatureCollection",
+        "name": "mml-omap-lidar-vegetation",
+        "crs": {"type": "name", "properties": {"name": "EPSG:3067"}},
+        "features": features,
+    }
+    if args.bbox:
+        bbox = parse_orienteering_bbox(args.bbox)
+        magnetic_date = parse_date(args.magnetic_date)
+        magnetic_declination_deg = resolve_magnetic_declination_deg(
+            args.magnetic_declination_deg,
+            bbox=bbox,
+            magnetic_date=magnetic_date.isoformat(),
+        )
+        geojson = clip_geojson_to_frame(geojson, OrientedFrame(bbox, magnetic_declination_deg))
+        geojson["map_frame"] = {
+            "bbox": bbox,
+            "magnetic_declination_deg": magnetic_declination_deg,
+            "magnetic_date": magnetic_date.isoformat(),
+        }
+    write_json(Path(args.output), geojson)
+    print(f"Wrote {len(geojson['features'])} LiDAR-derived vegetation features.")
+    return 0
+
+
+def command_terrain_from_lidar(args: argparse.Namespace) -> int:
+    xs, ys, points = read_xyz_grid(Path(args.xyz))
+    contour_features = contour_features_from_xyz_grid(xs, ys, points, interval_m=args.interval_m)
+    cliff_features = cliff_features_from_xyz_grid(
+        xs,
+        ys,
+        points,
+        slope_threshold_deg=args.slope_threshold_deg,
+        min_length_m=args.min_cliff_length_m,
+    )
+    vegetation_features: list[dict[str, Any]] = []
+    if args.points:
+        vegetation_features = lidar_vegetation_features(
+            read_lidar_point_rows(Path(args.points)),
+            cell_size_m=args.cell_size_m,
+            min_height_m=args.min_height_m,
+            slow_count=args.slow_count,
+            fight_count=args.fight_count,
+        )
+    geojson = combined_terrain_geojson(
+        contour_features=contour_features,
+        cliff_features=cliff_features,
+        vegetation_features=vegetation_features,
+    )
+    geojson = add_map_frame_if_requested(
+        geojson,
+        bbox_raw=args.bbox,
+        magnetic_declination_deg_raw=args.magnetic_declination_deg,
+        magnetic_date_raw=args.magnetic_date,
+    )
+    write_json(Path(args.output), geojson)
+    print(
+        "Wrote "
+        f"{len(contour_features)} contours, "
+        f"{len(cliff_features)} cliffs, "
+        f"{len(vegetation_features)} vegetation features."
+    )
     return 0
 
 
@@ -2737,6 +3113,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     contours.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     contours.set_defaults(func=command_contours_from_xyz)
+
+    cliffs = subparsers.add_parser(
+        "cliffs-from-xyz",
+        help="Create candidate ISOM cliff GeoJSON from a LiDAR/DEM-derived regular XYZ elevation grid.",
+    )
+    cliffs.add_argument("input", help="Whitespace- or comma-separated XYZ grid in EPSG:3067 meters.")
+    cliffs.add_argument("output")
+    cliffs.add_argument("--slope-threshold-deg", type=float, default=38.0)
+    cliffs.add_argument("--min-length-m", type=float, default=8.0)
+    cliffs.set_defaults(func=command_cliffs_from_xyz)
+
+    vegetation = subparsers.add_parser(
+        "vegetation-from-lidar",
+        help="Create candidate ISOM vegetation GeoJSON from LAS/LAZ or x y z classification point rows.",
+    )
+    vegetation.add_argument("input", help="LAS/LAZ or text rows: x y z [classification].")
+    vegetation.add_argument("output")
+    vegetation.add_argument("--cell-size-m", type=float, default=4.0)
+    vegetation.add_argument("--min-height-m", type=float, default=1.8)
+    vegetation.add_argument("--slow-count", type=int, default=4)
+    vegetation.add_argument("--fight-count", type=int, default=12)
+    vegetation.add_argument("--bbox", help="Optional min_x,min_y,max_x,max_y clip in EPSG:3067 meters")
+    vegetation.add_argument(
+        "--magnetic-declination-deg",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK. Used when --bbox is set.",
+    )
+    vegetation.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
+    vegetation.set_defaults(func=command_vegetation_from_lidar)
+
+    terrain = subparsers.add_parser(
+        "terrain-from-lidar",
+        help="Create combined contours, candidate cliffs, and candidate vegetation from LiDAR-derived inputs.",
+    )
+    terrain.add_argument("--xyz", required=True, help="Regular ground-elevation XYZ grid in EPSG:3067 meters.")
+    terrain.add_argument("--points", help="Optional LAS/LAZ or text rows for vegetation: x y z [classification].")
+    terrain.add_argument("output")
+    terrain.add_argument("--interval-m", type=float, default=2.5)
+    terrain.add_argument("--slope-threshold-deg", type=float, default=38.0)
+    terrain.add_argument("--min-cliff-length-m", type=float, default=8.0)
+    terrain.add_argument("--cell-size-m", type=float, default=4.0)
+    terrain.add_argument("--min-height-m", type=float, default=1.8)
+    terrain.add_argument("--slow-count", type=int, default=4)
+    terrain.add_argument("--fight-count", type=int, default=12)
+    terrain.add_argument("--bbox", help="Optional min_x,min_y,max_x,max_y clip in EPSG:3067 meters")
+    terrain.add_argument(
+        "--magnetic-declination-deg",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK. Used when --bbox is set.",
+    )
+    terrain.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
+    terrain.set_defaults(func=command_terrain_from_lidar)
 
     common_render = argparse.ArgumentParser(add_help=False)
     common_render.add_argument("input", help="Input GeoJSON")

@@ -71,8 +71,9 @@ Current source usage by feature type:
   sports/recreation land-use area rather than actual open runnable land.
   Forest vegetation is not included by default. Pass `--include-forest-mask` to
   map MML `metsamaankasvillisuus` polygons as a rough green `406` proxy for
-  experiments. Orienteering map style vegetation needs future source mapping or
-  raster analysis.
+  experiments. Orienteering map style vegetation should use LiDAR-derived
+  vegetation/runnability analysis through `vegetation-from-lidar` or
+  `terrain-from-lidar`.
 - Lakes and bodies of water: read from `jarvi` and `meri`, mapped as `lake`,
   and rendered as a blue area with black edge. Water names are read from
   `paikannimi` when MML includes name points in the extract, and rendered as
@@ -392,6 +393,25 @@ ISOM `101` contour features and can be rendered with the normal render commands:
 
 ```sh
 uv run mml-omap render-pdf contours.geojson contours.pdf --scale 5000
+```
+
+Generate candidate cliffs from the same ground grid:
+
+```sh
+uv run mml-omap cliffs-from-xyz lidar-ground.xyz cliffs.geojson --slope-threshold-deg 38 --min-length-m 8
+```
+
+Generate candidate vegetation/runnability from LAS/LAZ or text point rows
+`x y z [classification]`:
+
+```sh
+uv run mml-omap vegetation-from-lidar laser.laz vegetation.geojson --cell-size-m 4 --min-height-m 1.8 --slow-count 4 --fight-count 12
+```
+
+Generate one combined terrain GeoJSON with contours, cliffs, and vegetation:
+
+```sh
+uv run mml-omap terrain-from-lidar --xyz lidar-ground.xyz --points laser.laz terrain.geojson --bbox 371255,6673869,373305,6675299
 ```
 
 ## Render GeoJSON

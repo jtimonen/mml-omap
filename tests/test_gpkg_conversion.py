@@ -32,6 +32,9 @@ from mml_omap.cli import (
     command_symbols,
     contour_features_from_xyz_grid,
     command_contours_from_xyz,
+    cliff_features_from_xyz_grid,
+    lidar_vegetation_features,
+    should_render_point_symbol,
     table_rules_with_optional_forest_mask,
     validate_orienteering_bbox_size,
 )
@@ -128,6 +131,24 @@ class GeoPackageConversionTest(unittest.TestCase):
         rules = table_rules_with_optional_forest_mask(DEFAULT_TABLE_RULES, include_forest_mask=False)
 
         self.assertNotIn("metsamaankasvillisuus", rules)
+
+    def test_area_symbol_points_are_not_rendered_as_green_dots(self) -> None:
+        feature = {
+            "type": "Feature",
+            "properties": {"symbol": "406", "iof_symbol_number": "406", "object_type": "area"},
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+        }
+
+        self.assertFalse(should_render_point_symbol(feature))
+
+    def test_real_point_symbols_still_render_as_points(self) -> None:
+        feature = {
+            "type": "Feature",
+            "properties": {"symbol": "204", "iof_symbol_number": "204", "object_type": "point"},
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+        }
+
+        self.assertTrue(should_render_point_symbol(feature))
 
 
 class OrienteeringBoundsTest(unittest.TestCase):
@@ -441,6 +462,41 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertEqual(features[0]["properties"]["symbol"], "101")
         self.assertEqual(features[0]["properties"]["korkeusarvo"], 5000)
         self.assertEqual(features[0]["geometry"]["type"], "LineString")
+
+    def test_lidar_xyz_grid_generates_candidate_cliffs(self) -> None:
+        xs = [0.0, 10.0, 20.0]
+        ys = [0.0, 10.0, 20.0]
+        points = {
+            (x, y): (20.0 if x >= 10.0 else 0.0)
+            for x in xs
+            for y in ys
+        }
+
+        features = cliff_features_from_xyz_grid(xs, ys, points, slope_threshold_deg=30.0, min_length_m=1.0)
+
+        self.assertTrue(features)
+        self.assertEqual(features[0]["properties"]["symbol"], "202")
+
+    def test_lidar_points_generate_dissolved_vegetation_features(self) -> None:
+        rows = [
+            (0.0, 0.0, 0.0, 2),
+            (1.0, 1.0, 3.0, 5),
+            (2.0, 2.0, 3.2, 5),
+            (3.0, 3.0, 3.4, 5),
+            (4.0, 4.0, 3.6, 5),
+        ]
+
+        features = lidar_vegetation_features(
+            rows,
+            cell_size_m=10.0,
+            min_height_m=1.8,
+            slow_count=2,
+            fight_count=10,
+        )
+
+        self.assertEqual(len(features), 1)
+        self.assertEqual(features[0]["properties"]["symbol"], "406")
+        self.assertEqual(features[0]["geometry"]["type"], "Polygon")
 
     def test_contours_from_xyz_command_writes_geojson(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

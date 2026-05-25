@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9
+
+- Bumped the package release version to `0.1.9`.
+- Documented that terrain noise estimates use a 0.15 m fallback floor when
+  LiDAR ground-cell residuals do not contain enough spread to estimate noise
+  from the point cloud itself.
+
 ## 0.1.8
 
 - Sports and recreation areas from MML `urheilujavirkistysalue` now render as

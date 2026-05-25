@@ -119,6 +119,12 @@ from absolute residuals around the cell estimate. The grid is then smoothed with
 a Gaussian kernel using inverse-variance confidence weights, producing the
 estimated mean surface `mu(x, y)`.
 
+When a cell has only one usable ground return, or the residuals have effectively
+no spread, the robust estimate cannot distinguish point-cloud noise from zero
+local variation. In that case the terrain report uses a conservative 0.15 m
+noise floor. On sparse 0.5 p data with 1 m grid cells, many cells hit that
+fallback, so `global_noise_estimate_m` can remain 0.15 m across builds.
+
 `mu(x, y)` is represented as a regular raster surface. Elevation at arbitrary
 locations inside the map can be evaluated by interpolation on that surface, and
 contours are generated from that estimated surface rather than from raw point

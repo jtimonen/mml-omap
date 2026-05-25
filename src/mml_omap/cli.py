@@ -115,6 +115,7 @@ DEFAULT_NORTH_LINE_SPACING_M = 300.0
 DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 20.0
 DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
 MML_LASER_MAP_SHEET_GRID_M = 3000.0
+DEFAULT_MML_JOB_ATTEMPTS = 3
 
 
 def read_json(path: Path) -> Any:
@@ -414,16 +415,22 @@ def download_file(url: str, api_key: str, output_path: Path) -> None:
     request = urllib.request.Request(url, headers=auth_headers(api_key))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     progress(f"Downloading MML result to {output_path}...")
+    temporary_path = output_path.with_name(output_path.name + ".part")
     total = 0
-    with urllib.request.urlopen(request, context=https_context()) as response, output_path.open("wb") as file:
-        while True:
-            chunk = response.read(1024 * 1024)
-            if not chunk:
-                break
-            file.write(chunk)
-            total += len(chunk)
-            if total // (10 * 1024 * 1024) != (total - len(chunk)) // (10 * 1024 * 1024):
-                progress(f"Downloaded {total / (1024 * 1024):.1f} MiB...")
+    try:
+        with urllib.request.urlopen(request, context=https_context()) as response, temporary_path.open("wb") as file:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                file.write(chunk)
+                total += len(chunk)
+                if total // (10 * 1024 * 1024) != (total - len(chunk)) // (10 * 1024 * 1024):
+                    progress(f"Downloaded {total / (1024 * 1024):.1f} MiB...")
+        temporary_path.replace(output_path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
     progress(f"Downloaded {total / (1024 * 1024):.1f} MiB.")
 
 
@@ -519,6 +526,40 @@ def wait_for_job(job_url: str, api_key: str, *, poll_seconds: float, timeout_sec
         if elapsed > timeout_seconds:
             raise TimeoutError(f"MML job did not finish within {timeout_seconds:.0f} seconds: {job_url}")
         time.sleep(poll_seconds)
+
+
+def mml_job_results_with_retries(
+    *,
+    submit_job: Any,
+    api_key: str,
+    poll_seconds: float,
+    timeout_seconds: float,
+    description: str,
+    attempts: int = DEFAULT_MML_JOB_ATTEMPTS,
+) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            progress(f"Retrying {description} MML job ({attempt}/{attempts})...")
+        try:
+            job_url = submit_job()
+            progress(f"MML job URL: {job_url}")
+            status = wait_for_job(
+                job_url,
+                api_key,
+                poll_seconds=poll_seconds,
+                timeout_seconds=timeout_seconds,
+            )
+            progress(f"Fetching {description} result metadata...")
+            return http_json(results_url_from_status(status, job_url), api_key)
+        except (RuntimeError, TimeoutError, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            progress(f"{description} MML job attempt {attempt} failed: {exc}")
+            time.sleep(min(10.0 * attempt, 30.0))
+    assert last_error is not None
+    raise last_error
 
 
 def results_url_from_status(status: dict[str, Any], job_url: str) -> str:
@@ -3029,21 +3070,18 @@ def command_download(args: argparse.Namespace) -> int:
         f"for paper bbox {format_bbox(bbox)}; fetch bbox {format_bbox(mml_bbox)}; "
         f"KOK {magnetic_declination_deg:.2f} deg."
     )
-    job_url = submit_mml_bbox_job(
+    results = mml_job_results_with_retries(
+        submit_job=lambda: submit_mml_bbox_job(
+            api_key=api_key,
+            bbox=mml_bbox,
+            theme=args.theme,
+            base_url=args.base_url.rstrip("/"),
+        ),
         api_key=api_key,
-        bbox=mml_bbox,
-        theme=args.theme,
-        base_url=args.base_url.rstrip("/"),
-    )
-    progress(f"MML job URL: {job_url}")
-    status = wait_for_job(
-        job_url,
-        api_key,
         poll_seconds=args.poll_seconds,
         timeout_seconds=args.timeout_seconds,
+        description="vector bbox",
     )
-    progress("Fetching MML result metadata...")
-    results = http_json(results_url_from_status(status, job_url), api_key)
     download_url = pick_download_url(results)
     download_file(download_url, api_key, Path(args.output))
     return 0
@@ -3062,18 +3100,20 @@ def download_map_sheet_process_file(
     suffixes: tuple[str, ...],
     extra_inputs: dict[str, Any] | None = None,
 ) -> Path:
-    job_url = submit_map_sheet_process_job(
+    results = mml_job_results_with_retries(
+        submit_job=lambda: submit_map_sheet_process_job(
+            api_key=api_key,
+            map_sheets=map_sheets,
+            process_id=process_id,
+            file_format=file_format,
+            base_url=base_url.rstrip("/"),
+            extra_inputs=extra_inputs,
+        ),
         api_key=api_key,
-        map_sheets=map_sheets,
-        process_id=process_id,
-        file_format=file_format,
-        base_url=base_url.rstrip("/"),
-        extra_inputs=extra_inputs,
+        poll_seconds=poll_seconds,
+        timeout_seconds=timeout_seconds,
+        description=process_id,
     )
-    progress(f"MML {process_id} job URL: {job_url}")
-    status = wait_for_job(job_url, api_key, poll_seconds=poll_seconds, timeout_seconds=timeout_seconds)
-    progress(f"Fetching MML {process_id} result metadata...")
-    results = http_json(results_url_from_status(status, job_url), api_key)
     download_url = pick_download_url_by_suffix(results, suffixes)
     download_file(download_url, api_key, output_path)
     return output_path

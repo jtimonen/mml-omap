@@ -7,9 +7,8 @@
     changes must update `README.md`.
   - MML table, `kohdeluokka`, internal object type, or ISOM symbol mapping
     changes must update `docs/mml-to-isom-mapping.md`.
-  - Contour, cliff, elevation, vegetation, LiDAR, DEM, point-cloud, or
-    orienteering map style algorithm changes must update
-    `docs/orienteering-map-style-gap.md`.
+  - Build pipeline, contour, cliff, elevation, vegetation, LiDAR, point-cloud,
+    or orienteering map style changes must update `docs/pipeline.md`.
   - Built-in symbol-library or renderer-symbol contract changes must update
     `docs/isom-symbol-library.md`.
 - Do not keep backwards-compatibility shims, duplicate old workflows, fallback

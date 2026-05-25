@@ -74,10 +74,13 @@ uv run mml-omap ekp
 
 The command writes:
 
-- `builds/examples/espoo-keskuspuisto/mapant-center.geojson`
-- `builds/examples/espoo-keskuspuisto/mapant-center.png`
-- `builds/examples/espoo-keskuspuisto/mapant-center.pdf`
-- `builds/examples/espoo-keskuspuisto/mapant-center-symbols.pdf`
+- `builds/examples/espoo-keskuspuisto/mapant-center-1m.geojson`
+- `builds/examples/espoo-keskuspuisto/mapant-center-1m.png`
+- `builds/examples/espoo-keskuspuisto/mapant-center-1m.pdf`
+- `builds/examples/espoo-keskuspuisto/mapant-center-1m-symbols.pdf`
+- matching `mapant-center-2_5m.*` and `mapant-center-5m.*` outputs
+- `mapant-center-1m-terrain-report.json`, `mapant-center-2_5m-terrain-report.json`,
+  and `mapant-center-5m-terrain-report.json`
 - `builds/examples/espoo-keskuspuisto/downloads/`
 
 ## What It Generates
@@ -138,9 +141,8 @@ The formula is approximate and not an official MML/FMI Erantokartta model.
 
 - [docs/mml-to-isom-mapping.md](docs/mml-to-isom-mapping.md) documents MML
   tables, `kohdeluokka` handling, and ISOM symbol mapping.
-- [docs/orienteering-map-style-gap.md](docs/orienteering-map-style-gap.md)
-  documents why plain vector data is not enough and explains the contour,
-  cliff, elevation, and vegetation algorithms.
+- [docs/pipeline.md](docs/pipeline.md) documents the build pipeline, terrain
+  model, generated features, algorithms, and known gaps.
 - [docs/isom-symbol-library.md](docs/isom-symbol-library.md) documents the
   built-in symbol definitions and renderer contract.
 

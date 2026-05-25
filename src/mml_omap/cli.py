@@ -86,7 +86,6 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
             "36312": "wide_stream",
         },
     },
-    "korkeuskayra": {"object_type": "line", "symbol": "contour"},
     "rakennusreunaviiva": {"object_type": "line", "symbol": "building"},
     "jarvi": {"object_type": "area", "symbol": "lake"},
     "meri": {"object_type": "area", "symbol": "lake"},
@@ -115,6 +114,7 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
 DEFAULT_NORTH_LINE_SPACING_M = 300.0
 DEFAULT_CONTOUR_MERGE_TOLERANCE_M = 20.0
 DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
+MML_LASER_MAP_SHEET_GRID_M = 3000.0
 
 
 def read_json(path: Path) -> Any:
@@ -562,6 +562,36 @@ def extract_first_gpkg(archive_path: Path, output_dir: Path) -> Path:
             raise RuntimeError(f"No .gpkg file found in {archive_path}")
         archive.extract(gpkg_names[0], output_dir)
         return output_dir / gpkg_names[0]
+
+
+def extract_laser_paths(download_path: Path, output_dir: Path) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if zipfile.is_zipfile(download_path):
+        with zipfile.ZipFile(download_path) as archive:
+            laz_names = [
+                name
+                for name in archive.namelist()
+                if name.lower().endswith((".las", ".laz"))
+            ]
+            if not laz_names:
+                raise RuntimeError(f"No .las/.laz file found in {download_path}")
+            for name in laz_names:
+                archive.extract(name, output_dir)
+            return [output_dir / name for name in laz_names]
+
+    with download_path.open("rb") as file:
+        magic = file.read(4)
+    if magic == b"LASF":
+        target = download_path.with_suffix(".laz")
+        if download_path != target:
+            if target.exists():
+                target.unlink()
+            download_path.replace(target)
+        return [target]
+    raise RuntimeError(
+        f"MML laser download is neither a ZIP nor LAS/LAZ data: {download_path} "
+        f"(first bytes: {magic!r})"
+    )
 
 
 def load_table_rules(path: Path | None) -> dict[str, dict[str, Any]]:
@@ -1444,7 +1474,7 @@ def tm35_map_sheets_for_bbox(bbox: list[float]) -> list[str]:
         raise RuntimeError("Automatic MML laser sheet resolution requires the tm35fin dependency") from exc
 
     min_x, min_y, max_x, max_y = bbox
-    sample_step_m = 3000.0
+    sample_step_m = MML_LASER_MAP_SHEET_GRID_M
     xs = coordinate_samples(min_x, max_x, sample_step_m)
     ys = coordinate_samples(min_y, max_y, sample_step_m)
     names = {
@@ -1472,16 +1502,18 @@ def ground_grid_from_lidar_points(
     bbox: list[float],
     cell_size_m: float,
     ground_quantile: float = 0.5,
+    smoothing_sigma_m: float = 1.5,
     fill_max_distance_m: float = 12.0,
-) -> tuple[list[float], list[float], dict[tuple[float, float], float]]:
+) -> tuple[list[float], list[float], dict[tuple[float, float], float], dict[str, Any]]:
     try:
         import numpy as np
-        from scipy.spatial import cKDTree
     except ImportError as exc:
-        raise RuntimeError("Point-cloud ground gridding requires numpy and scipy") from exc
+        raise RuntimeError("Point-cloud ground gridding requires numpy") from exc
 
     if cell_size_m <= 0:
         raise ValueError("--ground-cell-size-m must be greater than zero")
+    if smoothing_sigma_m < 0:
+        raise ValueError("--ground-smoothing-sigma-m must be zero or greater")
     if not 0.0 <= ground_quantile <= 1.0:
         raise ValueError("--ground-quantile must be between 0 and 1")
     min_x, min_y, max_x, max_y = bbox
@@ -1500,27 +1532,44 @@ def ground_grid_from_lidar_points(
     xs = [min_x + column * cell_size_m for column in range(columns)]
     ys = [min_y + row * cell_size_m for row in range(rows_count)]
     grid = np.full((rows_count, columns), np.nan, dtype=float)
+    confidence = np.zeros((rows_count, columns), dtype=float)
     cell_values: dict[tuple[int, int], list[float]] = {}
     for x, y, z in ground_rows:
         column = min(max(int(round((x - min_x) / cell_size_m)), 0), columns - 1)
         row = min(max(int(round((y - min_y) / cell_size_m)), 0), rows_count - 1)
         cell_values.setdefault((row, column), []).append(z)
+
+    residuals: list[float] = []
+    cell_noise_values: list[float] = []
     for (row, column), values in cell_values.items():
-        grid[row, column] = float(np.quantile(np.asarray(values, dtype=float), ground_quantile))
+        sample = np.asarray(values, dtype=float)
+        estimate = float(np.quantile(sample, ground_quantile))
+        grid[row, column] = estimate
+        residuals.extend(abs(float(value) - estimate) for value in sample)
+
+    global_noise_m = robust_noise_m(np.asarray(residuals, dtype=float), default=0.15)
+    for (row, column), values in cell_values.items():
+        sample = np.asarray(values, dtype=float)
+        cell_noise_m = robust_noise_m(abs(sample - grid[row, column]), default=global_noise_m)
+        cell_noise_values.append(cell_noise_m)
+        # Confidence is inverse variance of the cell mean. Cap tiny noise values
+        # so dense flat cells do not dominate the whole smoothed surface.
+        confidence[row, column] = len(values) / max(cell_noise_m, 0.05) ** 2
 
     known_row, known_column = np.where(~np.isnan(grid))
     known_xy = np.column_stack((known_column.astype(float), known_row.astype(float))) * cell_size_m
     known_z = grid[known_row, known_column]
+    known_confidence = confidence[known_row, known_column]
     all_row, all_column = np.indices(grid.shape)
     missing = np.isnan(grid)
     if np.any(missing):
         query_xy = np.column_stack((all_column[missing].astype(float), all_row[missing].astype(float))) * cell_size_m
-        neighbor_count = min(8, len(known_z))
-        tree = cKDTree(known_xy)
-        distances, indexes = tree.query(query_xy, k=neighbor_count, distance_upper_bound=fill_max_distance_m)
-        if neighbor_count == 1:
-            distances = distances[:, np.newaxis]
-            indexes = indexes[:, np.newaxis]
+        distances, indexes = nearest_ground_cells(
+            known_xy,
+            query_xy,
+            neighbor_count=min(8, len(known_z)),
+            max_distance_m=fill_max_distance_m,
+        )
         filled = []
         for point_distances, point_indexes in zip(distances, indexes):
             valid = point_indexes < len(known_z)
@@ -1536,15 +1585,93 @@ def ground_grid_from_lidar_points(
             weights = 1.0 / (valid_distances * valid_distances)
             filled.append(float(np.sum(weights * known_z[valid_indexes]) / np.sum(weights)))
         grid[missing] = np.asarray(filled)
+        confidence[missing] = max(float(np.nanmedian(known_confidence)) * 0.10, 1e-6)
     if np.isnan(grid).any():
         raise ValueError("Point cloud has ground gaps too large to build a complete contour grid")
+
+    if smoothing_sigma_m > 0:
+        try:
+            from scipy.ndimage import gaussian_filter
+        except ImportError as exc:
+            raise RuntimeError("Ground model smoothing requires scipy") from exc
+        sigma_cells = smoothing_sigma_m / cell_size_m
+        weighted = gaussian_filter(grid * confidence, sigma=sigma_cells, mode="nearest")
+        weights = gaussian_filter(confidence, sigma=sigma_cells, mode="nearest")
+        grid = weighted / np.maximum(weights, 1e-12)
 
     points = {
         (xs[column], ys[row]): float(grid[row, column])
         for row in range(rows_count)
         for column in range(columns)
     }
-    return xs, ys, points
+    report = {
+        "model": "weighted Gaussian-smoothed regular grid from classified ground points",
+        "observation_model": "elevation_observation(x,y) = mu(x,y) + epsilon",
+        "ground_point_count": len(ground_rows),
+        "grid_columns": columns,
+        "grid_rows": rows_count,
+        "grid_cell_size_m": cell_size_m,
+        "observed_cell_count": len(cell_values),
+        "interpolated_cell_count": int(np.count_nonzero(missing)),
+        "ground_quantile": ground_quantile,
+        "ground_smoothing_sigma_m": smoothing_sigma_m,
+        "fill_max_distance_m": fill_max_distance_m,
+        "global_noise_estimate_m": global_noise_m,
+        "median_cell_noise_estimate_m": float(np.median(cell_noise_values)) if cell_noise_values else global_noise_m,
+        "p90_cell_noise_estimate_m": float(np.quantile(cell_noise_values, 0.9)) if cell_noise_values else global_noise_m,
+    }
+    return xs, ys, points, report
+
+
+def nearest_ground_cells(
+    known_xy: Any,
+    query_xy: Any,
+    *,
+    neighbor_count: int,
+    max_distance_m: float,
+) -> tuple[Any, Any]:
+    import numpy as np
+
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError:
+        distances_out = []
+        indexes_out = []
+        for query in query_xy:
+            distances = np.hypot(known_xy[:, 0] - query[0], known_xy[:, 1] - query[1])
+            order = np.argsort(distances)[:neighbor_count]
+            point_distances = distances[order]
+            point_indexes = order.astype(int)
+            valid = point_distances <= max_distance_m
+            padded_distances = np.full(neighbor_count, np.inf, dtype=float)
+            padded_indexes = np.full(neighbor_count, len(known_xy), dtype=int)
+            padded_distances[: np.count_nonzero(valid)] = point_distances[valid]
+            padded_indexes[: np.count_nonzero(valid)] = point_indexes[valid]
+            distances_out.append(padded_distances)
+            indexes_out.append(padded_indexes)
+        return np.asarray(distances_out), np.asarray(indexes_out)
+
+    tree = cKDTree(known_xy)
+    distances, indexes = tree.query(query_xy, k=neighbor_count, distance_upper_bound=max_distance_m)
+    if neighbor_count == 1:
+        distances = distances[:, np.newaxis]
+        indexes = indexes[:, np.newaxis]
+    return distances, indexes
+
+
+def robust_noise_m(residuals: Any, *, default: float) -> float:
+    import numpy as np
+
+    values = np.asarray(residuals, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return default
+    median = float(np.median(values))
+    mad = float(np.median(np.abs(values - median)))
+    estimate = 1.4826 * mad
+    if estimate <= 1e-9:
+        return max(median, default)
+    return estimate
 
 
 def lidar_vegetation_features(
@@ -3035,7 +3162,7 @@ def command_generate(args: argparse.Namespace) -> int:
     return 0
 
 
-def build_combined_map(args: argparse.Namespace) -> dict[str, Any]:
+def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
     api_key = resolve_api_key(args)
     output_base = Path(args.output)
     work_dir = Path(args.work_dir) if args.work_dir else output_base.parent / "downloads"
@@ -3067,17 +3194,7 @@ def build_combined_map(args: argparse.Namespace) -> dict[str, Any]:
         extra_inputs={"dataSetInput": "Uusin"},
     )
     laser_dir = work_dir / "mml" / f"{output_base.stem}-laser"
-    if laser_archive_path.suffix.lower() == ".zip":
-        laser_dir.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(laser_archive_path) as archive:
-            laz_names = [name for name in archive.namelist() if name.lower().endswith(".laz")]
-            if not laz_names:
-                raise RuntimeError(f"No .laz file found in {laser_archive_path}")
-            for name in laz_names:
-                archive.extract(name, laser_dir)
-            laser_paths = [laser_dir / name for name in laz_names]
-    else:
-        laser_paths = [laser_archive_path]
+    laser_paths = extract_laser_paths(laser_archive_path, laser_dir)
     vector_rules = table_rules_with_optional_forest_mask(
         load_table_rules(Path(args.mapping) if args.mapping else None),
         include_forest_mask=False,
@@ -3095,17 +3212,38 @@ def build_combined_map(args: argparse.Namespace) -> dict[str, Any]:
         },
     )
     lidar_rows = read_lidar_point_rows_many(laser_paths)
-    xs, ys, elevation_points = ground_grid_from_lidar_points(
+    xs, ys, elevation_points, ground_report = ground_grid_from_lidar_points(
         lidar_rows,
         bbox=terrain_bbox,
         cell_size_m=args.ground_cell_size_m,
         ground_quantile=args.ground_quantile,
+        smoothing_sigma_m=args.ground_smoothing_sigma_m,
     )
+    return {
+        "bbox": bbox,
+        "terrain_bbox": terrain_bbox,
+        "magnetic_declination_deg": magnetic_declination_deg,
+        "magnetic_date": magnetic_date.isoformat(),
+        "vector_geojson": vector_geojson,
+        "lidar_rows": lidar_rows,
+        "laser_sheets": laser_sheets,
+        "laser_paths": [str(path) for path in laser_paths],
+        "xs": xs,
+        "ys": ys,
+        "elevation_points": elevation_points,
+        "ground_report": ground_report,
+    }
+
+
+def combined_map_from_source_data(source_data: dict[str, Any], args: argparse.Namespace, *, interval_m: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    xs = source_data["xs"]
+    ys = source_data["ys"]
+    elevation_points = source_data["elevation_points"]
     contour_features = contour_features_from_xyz_grid(
         xs,
         ys,
         elevation_points,
-        interval_m=args.interval_m,
+        interval_m=interval_m,
         simplify_tolerance_m=getattr(args, "contour_simplify_tolerance_m", 0.0),
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
@@ -3117,7 +3255,7 @@ def build_combined_map(args: argparse.Namespace) -> dict[str, Any]:
         min_length_m=args.min_cliff_length_m,
     )
     vegetation_features = lidar_vegetation_features(
-        lidar_rows,
+        source_data["lidar_rows"],
         cell_size_m=args.cell_size_m,
         min_height_m=args.min_height_m,
         slow_count=args.slow_count,
@@ -3131,35 +3269,65 @@ def build_combined_map(args: argparse.Namespace) -> dict[str, Any]:
     terrain_geojson = add_map_frame_if_requested(
         terrain_geojson,
         bbox_raw=args.bbox,
-        magnetic_declination_deg_raw=str(magnetic_declination_deg),
-        magnetic_date_raw=magnetic_date.isoformat(),
+        magnetic_declination_deg_raw=str(source_data["magnetic_declination_deg"]),
+        magnetic_date_raw=source_data["magnetic_date"],
     )
     combined = {
         "type": "FeatureCollection",
         "name": "mml-omap-combined",
         "crs": {"type": "name", "properties": {"name": "EPSG:3067"}},
         "map_frame": {
-            "bbox": bbox,
-            "magnetic_declination_deg": magnetic_declination_deg,
-            "magnetic_date": magnetic_date.isoformat(),
+            "bbox": source_data["bbox"],
+            "magnetic_declination_deg": source_data["magnetic_declination_deg"],
+            "magnetic_date": source_data["magnetic_date"],
         },
-        "features": [*geojson_features(vector_geojson), *geojson_features(terrain_geojson)],
+        "features": [*geojson_features(source_data["vector_geojson"]), *geojson_features(terrain_geojson)],
+    }
+    report = {
+        "bbox": source_data["bbox"],
+        "terrain_bbox": source_data["terrain_bbox"],
+        "magnetic_declination_deg": source_data["magnetic_declination_deg"],
+        "magnetic_date": source_data["magnetic_date"],
+        "laser_sheets": source_data["laser_sheets"],
+        "laser_paths": source_data["laser_paths"],
+        "contour_interval_m": interval_m,
+        "contour_feature_count": len(contour_features),
+        "cliff_feature_count": len(cliff_features),
+        "vegetation_feature_count": len(vegetation_features),
+        "vector_feature_count": len(source_data["vector_geojson"]["features"]),
+        "ground_model": source_data["ground_report"],
     }
     progress(
         "Combined "
-        f"{len(vector_geojson['features'])} vector, "
+        f"{len(source_data['vector_geojson']['features'])} vector, "
         f"{len(contour_features)} contour, "
         f"{len(cliff_features)} cliff, "
         f"{len(vegetation_features)} vegetation features."
     )
-    return combined
+    return combined, report
+
+
+def build_combined_map(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
+    source_data = build_source_data(args)
+    return combined_map_from_source_data(source_data, args, interval_m=args.interval_m)
 
 
 def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
-    combined = build_combined_map(args)
+    combined, report = build_combined_map(args)
+    render_build_outputs(output_base, combined, report, args)
+    return 0
+
+
+def render_build_outputs(
+    output_base: Path,
+    combined: dict[str, Any],
+    report: dict[str, Any],
+    args: argparse.Namespace,
+) -> None:
     geojson_path = output_base.with_suffix(".geojson")
     write_json(geojson_path, combined)
+    write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
     transform = make_render_transform(
         argparse.Namespace(
             bbox=None,
@@ -3204,7 +3372,6 @@ def command_build(args: argparse.Namespace) -> int:
         include_symbol_numbers=True,
     )
     print(f"Wrote {geojson_path}, {output_base.with_suffix('.png')}, {output_base.with_suffix('.pdf')}.")
-    return 0
 
 
 def command_ekp(args: argparse.Namespace) -> int:
@@ -3229,6 +3396,7 @@ def command_ekp(args: argparse.Namespace) -> int:
         index_contour_every=5,
         ground_cell_size_m=1.0,
         ground_quantile=0.5,
+        ground_smoothing_sigma_m=1.5,
         terrain_context_margin_m=DEFAULT_TERRAIN_CONTEXT_MARGIN_M,
         slope_threshold_deg=38.0,
         min_cliff_length_m=8.0,
@@ -3241,7 +3409,20 @@ def command_ekp(args: argparse.Namespace) -> int:
         magnetic_declination_deg="auto",
         magnetic_date=None,
     )
-    return command_build(build_args)
+    source_data = build_source_data(build_args)
+    for interval_m in (1.0, 2.5, 5.0):
+        combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
+        output_base = render_output_base(build_args.output).with_name(
+            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        )
+        render_build_outputs(output_base, combined, report, build_args)
+    return 0
+
+
+def contour_interval_slug(interval_m: float) -> str:
+    if float(interval_m).is_integer():
+        return f"{int(interval_m)}m"
+    return f"{str(interval_m).replace('.', '_')}m"
 
 
 def command_contours_from_xyz(args: argparse.Namespace) -> int:
@@ -3575,6 +3756,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--index-contour-every", type=int, default=5)
     build.add_argument("--ground-cell-size-m", type=float, default=1.0)
     build.add_argument("--ground-quantile", type=float, default=0.5)
+    build.add_argument("--ground-smoothing-sigma-m", type=float, default=1.5)
     build.add_argument("--terrain-context-margin-m", type=float, default=DEFAULT_TERRAIN_CONTEXT_MARGIN_M)
     build.add_argument("--slope-threshold-deg", type=float, default=38.0)
     build.add_argument("--min-cliff-length-m", type=float, default=8.0)

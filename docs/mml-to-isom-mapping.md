@@ -40,7 +40,6 @@ Features without an ISOM symbol assignment are skipped by default. With
 
 | MML table | MML `kohdeluokka` | ISOM symbol | ISOM name | Notes |
 | --- | --- | --- | --- | --- |
-| `korkeuskayra` | all | `101` | Contour | MML height line. Index contour styling is currently render-time only. |
 | `jyrkanne` | all | `202` | Cliff | MML cliff line. Impassable/passable distinction is not inferred yet. |
 | `kallioalue` | all | `214` | Bare rock | MML rock area. This is a source-data proxy, not field-checked bare rock. |
 | `kivi` | all | `204` | Boulder | MML point rock. Size classes are not inferred yet. |

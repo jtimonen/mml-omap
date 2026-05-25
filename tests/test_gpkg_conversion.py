@@ -33,8 +33,10 @@ from mml_omap.cli import (
     contour_features_from_xyz_grid,
     command_contours_from_xyz,
     cliff_features_from_xyz_grid,
+    ground_grid_from_lidar_points,
     lidar_vegetation_features,
     merge_geojson_documents,
+    extract_laser_paths,
     should_render_point_symbol,
     table_rules_with_optional_forest_mask,
     validate_orienteering_bbox_size,
@@ -512,6 +514,34 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertEqual(len(features), 1)
         self.assertEqual(features[0]["properties"]["symbol"], "406")
         self.assertEqual(features[0]["geometry"]["type"], "Polygon")
+
+    def test_ground_grid_reports_noise_estimates(self) -> None:
+        rows = [
+            (0.0, 0.0, 10.0, 2),
+            (0.1, 0.0, 10.2, 2),
+            (1.0, 0.0, 11.0, 2),
+            (1.0, 1.0, 11.2, 2),
+        ]
+
+        _xs, _ys, _points, report = ground_grid_from_lidar_points(
+            rows,
+            bbox=[0.0, 0.0, 1.0, 1.0],
+            cell_size_m=1.0,
+            smoothing_sigma_m=0.0,
+        )
+
+        self.assertEqual(report["observation_model"], "elevation_observation(x,y) = mu(x,y) + epsilon")
+        self.assertIn("global_noise_estimate_m", report)
+
+    def test_extract_laser_paths_accepts_direct_laz_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            download_path = Path(directory) / "laser.zip"
+            download_path.write_bytes(b"LASF" + b"\0" * 16)
+
+            paths = extract_laser_paths(download_path, Path(directory) / "laser")
+
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(paths[0].suffix, ".laz")
 
     def test_contours_from_xyz_command_writes_geojson(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

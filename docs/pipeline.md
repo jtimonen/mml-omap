@@ -97,7 +97,6 @@ The terrain report stores these files under the `lidar_rasters` key:
 
 | Output suffix | Meaning |
 | --- | --- |
-| `-contours-1m.png` | Contours from the ground model at 1 m interval with every fifth contour red. |
 | `-ground-gradient.png` | Ground model height gradient. |
 | `-ground-shading.png` | Analytical hillshade from the ground model. |
 | `-ground-slope.png` | Ground model slope; darker pixels are steeper. |
@@ -113,7 +112,7 @@ Continuous color rasters include an in-image color-scale legend. These rasters
 use 1 m cells, matching the OpenOrienteering LaserScan tool's typical pixel
 distance, but the implementation is independent and uses the existing
 `mml-omap` ground model and source point rows. They are intended as map-making
-support layers as well as diagnostics; map feature generation still uses the
+support layers; map feature generation still uses the
 vector algorithms described below.
 
 ## Ground Model

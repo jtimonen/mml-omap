@@ -28,7 +28,7 @@ from mml_omap.cli import (
     infer_contour_interval_m,
     iof_symbol_metadata,
     read_env_file_value,
-    render_laserscan_diagnostic_pngs,
+    render_lidar_raster_pngs,
     render_output_base,
     render_pdf,
     render_svg,
@@ -658,10 +658,9 @@ class OrienteeringBoundsTest(unittest.TestCase):
                 map_maker="mml-omap",
             )
 
-            reports = render_laserscan_diagnostic_pngs(source_data, output_base, args)
+            reports = render_lidar_raster_pngs(source_data, output_base, args)
 
             expected = {
-                "contours_1m",
                 "ground_gradient",
                 "ground_shading",
                 "ground_slope",

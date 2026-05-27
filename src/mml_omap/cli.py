@@ -1,4 +1,4 @@
-﻿"""Command line interface for exporting MML open data to GeoJSON.
+"""Command line interface for exporting MML open data to GeoJSON.
 
 The primary output is GeoJSON in EPSG:3067 coordinates. When the default mapping
 is enabled, features also get `symbol` and `object_type` properties.
@@ -29,7 +29,7 @@ from typing import Any
 import certifi
 
 from . import __version__
-from .diagnostics import render_laserscan_diagnostic_pngs as render_laserscan_diagnostic_pngs_impl
+from .lidar_rasters import render_lidar_raster_pngs as render_lidar_raster_pngs_impl
 from .lidar import (
     DEFAULT_GREEN_FIGHT_MIN_HITS,
     DEFAULT_GREEN_FIGHT_RATIO,
@@ -2282,7 +2282,7 @@ def map_footer_text(transform: RenderTransform, map_maker: str, contour_interval
 def lidar_footer_text(transform: RenderTransform, map_maker: str) -> str:
     return (
         f"{transform.paper_size} | Scale 1:{transform.scale} | {map_maker} | "
-        f"mml-omap {__version__} | LiDAR diagnostics | "
+        f"mml-omap {__version__} | LiDAR rasters | "
         f"KOK {transform.magnetic_declination_deg:.2f} deg | EPSG:3067"
     )
 
@@ -2743,12 +2743,12 @@ def viridis_rgb_array(values: Any) -> Any:
     return np.rint(anchors[lower] + (anchors[upper] - anchors[lower]) * t).astype(np.uint8)
 
 
-def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
-    return render_laserscan_diagnostic_pngs_impl(
+def render_lidar_raster_pngs(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    return render_lidar_raster_pngs_impl(
         source_data,
         output_base,
         args,
-        lidar_diagnostic_transform(source_data, args),
+        lidar_raster_transform(source_data, args),
     )
 
 
@@ -3565,7 +3565,7 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "bbox": bbox,
         "terrain_bbox": terrain_bbox,
-        "diagnostic_output": str(output_base),
+        "raster_output": str(output_base),
         "magnetic_declination_deg": magnetic_declination_deg,
         "magnetic_date": magnetic_date.isoformat(),
         "vector_geojson": vector_geojson,
@@ -3662,7 +3662,7 @@ def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
     source_data = build_source_data(args)
     progress("Generating LiDAR raster support images...")
-    ensure_lidar_diagnostic_reports(source_data, output_base, args)
+    ensure_lidar_raster_reports(source_data, output_base, args)
     progress("Generating combined vector map features...")
     combined, report = combined_map_from_source_data(source_data, args, interval_m=args.interval_m)
     progress("Writing GeoJSON, terrain report, PNG, and PDF outputs...")
@@ -3670,7 +3670,7 @@ def command_build(args: argparse.Namespace) -> int:
     return 0
 
 
-def lidar_diagnostic_transform(source_data: dict[str, Any], args: argparse.Namespace) -> RenderTransform:
+def lidar_raster_transform(source_data: dict[str, Any], args: argparse.Namespace) -> RenderTransform:
     return RenderTransform(
         source_data["bbox"],
         args.scale,
@@ -3679,10 +3679,10 @@ def lidar_diagnostic_transform(source_data: dict[str, Any], args: argparse.Names
     )
 
 
-def ensure_lidar_diagnostic_reports(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+def ensure_lidar_raster_reports(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
     existing = source_data.get("lidar_rasters")
     if not isinstance(existing, dict):
-        existing = render_laserscan_diagnostic_pngs(source_data, output_base, args)
+        existing = render_lidar_raster_pngs(source_data, output_base, args)
         source_data["lidar_rasters"] = existing
     return {"lidar_rasters": existing}
 
@@ -3697,9 +3697,9 @@ def render_build_outputs(
 ) -> None:
     geojson_path = output_base.with_suffix(".geojson")
     write_json(geojson_path, combined)
-    report.update(ensure_lidar_diagnostic_reports(
+    report.update(ensure_lidar_raster_reports(
         source_data,
-        render_output_base(source_data["diagnostic_output"]),
+        render_output_base(source_data["raster_output"]),
         args,
     ))
     write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
@@ -3773,7 +3773,7 @@ def command_ekp(args: argparse.Namespace) -> int:
         use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
+    ensure_lidar_raster_reports(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -3818,7 +3818,7 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
         use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
+    ensure_lidar_raster_reports(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -3863,7 +3863,7 @@ def command_puijo(args: argparse.Namespace) -> int:
         use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
+    ensure_lidar_raster_reports(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(
@@ -3908,7 +3908,7 @@ def command_vuokatinvaara(args: argparse.Namespace) -> int:
         use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
+    ensure_lidar_raster_reports(source_data, render_output_base(build_args.output), build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = render_output_base(build_args.output).with_name(

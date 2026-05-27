@@ -1,4 +1,4 @@
-"""LiDAR diagnostic raster rendering."""
+"""LiDAR raster support-layer rendering."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from typing import Any
 from . import __version__
 
 
-DIAGNOSTIC_CELL_SIZE_M = 1.0
+LIDAR_RASTER_CELL_SIZE_M = 1.0
 
 
-def diagnostic_plot_geometry(transform: Any, dpi: int) -> dict[str, int | float]:
+def raster_plot_geometry(transform: Any, dpi: int) -> dict[str, int | float]:
     px_per_mm = dpi / 25.4
     plot_left = int(round(transform.map_left_mm * px_per_mm))
     plot_top = int(round(transform.map_top_mm * px_per_mm))
@@ -31,25 +31,25 @@ def diagnostic_plot_geometry(transform: Any, dpi: int) -> dict[str, int | float]
     }
 
 
-def diagnostic_grid_shape(transform: Any) -> tuple[int, int]:
-    columns = max(1, int(math.ceil((transform.max_x - transform.min_x) / DIAGNOSTIC_CELL_SIZE_M)))
-    rows_count = max(1, int(math.ceil((transform.max_y - transform.min_y) / DIAGNOSTIC_CELL_SIZE_M)))
+def raster_grid_shape(transform: Any) -> tuple[int, int]:
+    columns = max(1, int(math.ceil((transform.max_x - transform.min_x) / LIDAR_RASTER_CELL_SIZE_M)))
+    rows_count = max(1, int(math.ceil((transform.max_y - transform.min_y) / LIDAR_RASTER_CELL_SIZE_M)))
     return columns, rows_count
 
 
-def diagnostic_cell_bounds(transform: Any, column: int, row: int) -> tuple[float, float, float, float]:
-    x0 = transform.min_x + column * DIAGNOSTIC_CELL_SIZE_M
-    y0 = transform.min_y + row * DIAGNOSTIC_CELL_SIZE_M
+def raster_cell_bounds(transform: Any, column: int, row: int) -> tuple[float, float, float, float]:
+    x0 = transform.min_x + column * LIDAR_RASTER_CELL_SIZE_M
+    y0 = transform.min_y + row * LIDAR_RASTER_CELL_SIZE_M
     return (
         x0,
         y0,
-        min(x0 + DIAGNOSTIC_CELL_SIZE_M, transform.max_x),
-        min(y0 + DIAGNOSTIC_CELL_SIZE_M, transform.max_y),
+        min(x0 + LIDAR_RASTER_CELL_SIZE_M, transform.max_x),
+        min(y0 + LIDAR_RASTER_CELL_SIZE_M, transform.max_y),
     )
 
 
 def cell_pixel_polygon(transform: Any, metrics: dict[str, int | float], column: int, row: int) -> list[tuple[float, float]]:
-    x0, y0, x1, y1 = diagnostic_cell_bounds(transform, column, row)
+    x0, y0, x1, y1 = raster_cell_bounds(transform, column, row)
     px_per_mm = float(metrics["px_per_mm"])
     return [
         tuple(value * px_per_mm for value in transform.to_mm(point))
@@ -77,7 +77,7 @@ def raster_to_page_image(rgb: Any, transform: Any, metrics: dict[str, int | floa
     height = int(metrics["height"])
     px_per_mm = float(metrics["px_per_mm"])
     scale_m_per_px = transform.scale / (1000.0 * px_per_mm)
-    cell_size = DIAGNOSTIC_CELL_SIZE_M
+    cell_size = LIDAR_RASTER_CELL_SIZE_M
     cos_a = transform._cos_declination
     sin_a = transform._sin_declination
     left_m = transform.map_left_mm * transform.scale / 1000.0
@@ -89,7 +89,7 @@ def raster_to_page_image(rgb: Any, transform: Any, metrics: dict[str, int | floa
             transform.center_x
             - transform.min_x
             + cos_a * (-left_m - transform.width_m / 2.0)
-            - sin_a * (transform.height_m / 2.0 + top_m)
+            + sin_a * (transform.height_m / 2.0 + top_m)
         )
         / cell_size,
         sin_a * scale_m_per_px / cell_size,
@@ -97,7 +97,7 @@ def raster_to_page_image(rgb: Any, transform: Any, metrics: dict[str, int | floa
         (
             transform.max_y
             - transform.center_y
-            - sin_a * (-left_m - transform.width_m / 2.0)
+            - sin_a * (left_m + transform.width_m / 2.0)
             - cos_a * (transform.height_m / 2.0 + top_m)
         )
         / cell_size,
@@ -128,8 +128,8 @@ def nearest_grid_values_for_cells(
 ) -> Any:
     import numpy as np
 
-    center_x = transform.min_x + (np.arange(columns, dtype=float) + 0.5) * DIAGNOSTIC_CELL_SIZE_M
-    center_y = transform.min_y + (np.arange(rows_count, dtype=float) + 0.5) * DIAGNOSTIC_CELL_SIZE_M
+    center_x = transform.min_x + (np.arange(columns, dtype=float) + 0.5) * LIDAR_RASTER_CELL_SIZE_M
+    center_y = transform.min_y + (np.arange(rows_count, dtype=float) + 0.5) * LIDAR_RASTER_CELL_SIZE_M
     xs_array = np.asarray(xs, dtype=float)
     ys_array = np.asarray(ys, dtype=float)
     x_indexes = np.searchsorted(xs_array, center_x)
@@ -149,12 +149,12 @@ def nearest_grid_values_for_cells(
     return grid[np.ix_(y_indexes, x_indexes)]
 
 
-def diagnostic_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str, Any]:
+def raster_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str, Any]:
     import numpy as np
 
     from .lidar import LIDAR_GROUND_CLASS, lidar_return_can_count_as_green, normalize_lidar_classification
 
-    columns, rows_count = diagnostic_grid_shape(transform)
+    columns, rows_count = raster_grid_shape(transform)
     ground_model = nearest_grid_values_for_cells(
         source_data["xs"],
         source_data["ys"],
@@ -185,12 +185,12 @@ def diagnostic_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str
     points = rows_array[mask]
     if len(points):
         column_indices = np.clip(
-            np.floor((points[:, 0] - transform.min_x) / DIAGNOSTIC_CELL_SIZE_M).astype(int),
+            np.floor((points[:, 0] - transform.min_x) / LIDAR_RASTER_CELL_SIZE_M).astype(int),
             0,
             columns - 1,
         )
         row_indices = np.clip(
-            np.floor((points[:, 1] - transform.min_y) / DIAGNOSTIC_CELL_SIZE_M).astype(int),
+            np.floor((points[:, 1] - transform.min_y) / LIDAR_RASTER_CELL_SIZE_M).astype(int),
             0,
             rows_count - 1,
         )
@@ -242,7 +242,7 @@ def diagnostic_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str
 def median_height_surface(source_data: dict[str, Any], transform: Any) -> tuple[Any, int, int]:
     import numpy as np
 
-    columns, rows_count = diagnostic_grid_shape(transform)
+    columns, rows_count = raster_grid_shape(transform)
     rows_array = np.asarray(source_data["lidar_rows"], dtype=float)
     values = np.full((rows_count, columns), np.nan, dtype=float)
     mask = (
@@ -258,12 +258,12 @@ def median_height_surface(source_data: dict[str, Any], transform: Any) -> tuple[
     if len(points) == 0:
         return values, 0, 0
     column_indices = np.clip(
-        np.floor((points[:, 0] - transform.min_x) / DIAGNOSTIC_CELL_SIZE_M).astype(int),
+        np.floor((points[:, 0] - transform.min_x) / LIDAR_RASTER_CELL_SIZE_M).astype(int),
         0,
         columns - 1,
     )
     row_indices = np.clip(
-        np.floor((points[:, 1] - transform.min_y) / DIAGNOSTIC_CELL_SIZE_M).astype(int),
+        np.floor((points[:, 1] - transform.min_y) / LIDAR_RASTER_CELL_SIZE_M).astype(int),
         0,
         rows_count - 1,
     )
@@ -284,7 +284,7 @@ def return_type_surface(source_data: dict[str, Any], transform: Any) -> tuple[An
 
     from .lidar import LIDAR_RETURN_TYPE_STYLES, lidar_return_type
 
-    columns, rows_count = diagnostic_grid_shape(transform)
+    columns, rows_count = raster_grid_shape(transform)
     keys = list(LIDAR_RETURN_TYPE_STYLES)
     key_index = {key: index for index, key in enumerate(keys)}
     counts_by_cell = np.zeros((rows_count, columns, len(keys)), dtype=np.uint16)
@@ -300,8 +300,8 @@ def return_type_surface(source_data: dict[str, Any], transform: Any) -> tuple[An
     )
     points = rows_array[mask]
     for x_raw, y_raw, _z_raw, classification in points:
-        column = int(np.clip(math.floor((x_raw - transform.min_x) / DIAGNOSTIC_CELL_SIZE_M), 0, columns - 1))
-        row = int(np.clip(math.floor((y_raw - transform.min_y) / DIAGNOSTIC_CELL_SIZE_M), 0, rows_count - 1))
+        column = int(np.clip(math.floor((x_raw - transform.min_x) / LIDAR_RASTER_CELL_SIZE_M), 0, columns - 1))
+        row = int(np.clip(math.floor((y_raw - transform.min_y) / LIDAR_RASTER_CELL_SIZE_M), 0, rows_count - 1))
         return_type = lidar_return_type(int(classification) if np.isfinite(classification) else None)
         counts_by_cell[row, column, key_index[return_type]] += 1
         point_counts[return_type] += 1
@@ -366,14 +366,14 @@ def viridis_rgb_array(values: Any) -> Any:
 def slope_degrees(values: Any) -> Any:
     import numpy as np
 
-    dy, dx = np.gradient(values, DIAGNOSTIC_CELL_SIZE_M, DIAGNOSTIC_CELL_SIZE_M)
+    dy, dx = np.gradient(values, LIDAR_RASTER_CELL_SIZE_M, LIDAR_RASTER_CELL_SIZE_M)
     return np.degrees(np.arctan(np.hypot(dx, dy)))
 
 
 def hillshade_rgb(values: Any) -> Any:
     import numpy as np
 
-    dy, dx = np.gradient(values, DIAGNOSTIC_CELL_SIZE_M, DIAGNOSTIC_CELL_SIZE_M)
+    dy, dx = np.gradient(values, LIDAR_RASTER_CELL_SIZE_M, LIDAR_RASTER_CELL_SIZE_M)
     azimuth = math.radians(315.0)
     altitude = math.radians(45.0)
     slope = np.arctan(np.hypot(dx, dy))
@@ -401,20 +401,34 @@ def grayscale_rgb(values: Any, *, min_value: float = 0.0, max_value: float | Non
     return np.repeat(gray[:, :, None], 3, axis=2), float(max_value)
 
 
-def viridis_scale(z_min: float, z_max: float) -> tuple[tuple[int, int, int], tuple[int, int, int], str, str]:
-    colors = viridis_rgb_array(__import__("numpy").asarray([0.0, 1.0], dtype=float))
-    return (
-        tuple(int(value) for value in colors[0]),
-        tuple(int(value) for value in colors[1]),
-        f"{z_min:.1f}",
-        f"{z_max:.1f}",
-    )
+def green_height_rgb(values: Any, *, min_value: float = 0.0, max_value: float | None = None) -> tuple[Any, float]:
+    import numpy as np
+
+    finite = values[np.isfinite(values)]
+    if max_value is None:
+        max_value = float(np.quantile(finite, 0.95)) if len(finite) else 1.0
+    if max_value <= min_value:
+        max_value = min_value + 1.0
+    normalized = np.clip((values - min_value) / (max_value - min_value), 0.0, 1.0)
+    normalized = np.nan_to_num(normalized, nan=0.0, posinf=1.0, neginf=0.0)
+    low = np.asarray([245, 250, 240], dtype=float)
+    high = np.asarray([0, 112, 60], dtype=float)
+    return np.rint(low + (high - low) * normalized[:, :, None]).astype("uint8"), float(max_value)
 
 
-def grayscale_scale(low_label: str, high_label: str, *, invert: bool = False) -> tuple[tuple[int, int, int], tuple[int, int, int], str, str]:
+def viridis_scale(z_min: float, z_max: float) -> tuple[list[tuple[int, int, int]], str, str]:
+    colors = viridis_rgb_array(__import__("numpy").linspace(0.0, 1.0, 9))
+    return [tuple(int(value) for value in color) for color in colors], f"{z_min:.1f}", f"{z_max:.1f}"
+
+
+def grayscale_scale(low_label: str, high_label: str, *, invert: bool = False) -> tuple[list[tuple[int, int, int]], str, str]:
     low = (255, 255, 255) if invert else (0, 0, 0)
     high = (0, 0, 0) if invert else (255, 255, 255)
-    return low, high, low_label, high_label
+    return [low, high], low_label, high_label
+
+
+def green_scale(low_label: str, high_label: str) -> tuple[list[tuple[int, int, int]], str, str]:
+    return [(245, 250, 240), (0, 112, 60)], low_label, high_label
 
 
 def render_raster_png(
@@ -426,17 +440,18 @@ def render_raster_png(
     title: str,
     legend: str,
     map_maker: str,
-    color_scale: tuple[tuple[int, int, int], tuple[int, int, int], str, str] | None = None,
+    color_scale: tuple[list[tuple[int, int, int]], str, str] | None = None,
+    swatches: list[tuple[tuple[int, int, int], str]] | None = None,
 ) -> dict[str, Any]:
     try:
         from PIL import Image, ImageDraw
         import numpy as np
     except ImportError as exc:
-        raise RuntimeError("LiDAR raster diagnostic rendering requires pillow and numpy") from exc
+        raise RuntimeError("LiDAR raster rendering requires pillow and numpy") from exc
 
     from .cli import draw_pillow_text_fit, lidar_footer_text, pillow_layout_font
 
-    metrics = diagnostic_plot_geometry(transform, dpi)
+    metrics = raster_plot_geometry(transform, dpi)
     px_per_mm = float(metrics["px_per_mm"])
     width = int(metrics["width"])
     height = int(metrics["height"])
@@ -454,7 +469,7 @@ def render_raster_png(
     draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(5.0 * px_per_mm)))), lidar_footer_text(transform, map_maker), fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
     draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(2.8 * px_per_mm)))), legend, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
     if color_scale is not None:
-        low_color, high_color, low_label, high_label = color_scale
+        scale_colors, low_label, high_label = color_scale
         bar_width = max(8, int(round(2.5 * px_per_mm)))
         bar_height = min(int(metrics["plot_height"]), max(24, int(round(35.0 * px_per_mm))))
         bar_x0 = min(width - bar_width - 2, int(metrics["plot_right"]) + int(round(2.5 * px_per_mm)))
@@ -463,8 +478,14 @@ def render_raster_png(
         bar_y0 = int(metrics["plot_top"]) + int(round(2.0 * px_per_mm))
         for offset in range(bar_height):
             t = 1.0 - offset / max(bar_height - 1, 1)
+            scaled = t * (len(scale_colors) - 1)
+            lower = max(0, min(int(math.floor(scaled)), len(scale_colors) - 1))
+            upper = max(0, min(lower + 1, len(scale_colors) - 1))
+            local_t = scaled - lower
+            low_color = scale_colors[lower]
+            high_color = scale_colors[upper]
             color = tuple(
-                int(round(low_color[channel] * (1.0 - t) + high_color[channel] * t))
+                int(round(low_color[channel] * (1.0 - local_t) + high_color[channel] * local_t))
                 for channel in range(3)
             )
             draw.line([(bar_x0, bar_y0 + offset), (bar_x0 + bar_width, bar_y0 + offset)], fill=(*color, 255))
@@ -472,6 +493,15 @@ def render_raster_png(
         label_x = min(width - int(round(20.0 * px_per_mm)), bar_x0 + bar_width + int(round(1.4 * px_per_mm)))
         draw.text((label_x, bar_y0), high_label, fill=(0, 0, 0, 255), font=footer_font)
         draw.text((label_x, bar_y0 + bar_height - max(10, int(round(2.6 * px_per_mm)))), low_label, fill=(0, 0, 0, 255), font=footer_font)
+        if swatches:
+            swatch_size = max(8, int(round(2.5 * px_per_mm)))
+            y = bar_y0 + bar_height + int(round(2.0 * px_per_mm))
+            for color, label in swatches:
+                if y + swatch_size >= height:
+                    break
+                draw.rectangle((bar_x0, y, bar_x0 + swatch_size, y + swatch_size), fill=(*color, 255), outline=(0, 0, 0, 255))
+                draw.text((bar_x0 + swatch_size + 5, y), label, fill=(0, 0, 0, 255), font=footer_font)
+                y += swatch_size + int(round(1.5 * px_per_mm))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pil_image.save(output_path)
     return {
@@ -484,100 +514,24 @@ def render_raster_png(
         "plot_width_px": int(metrics["plot_width"]),
         "plot_height_px": int(metrics["plot_height"]),
         "dpi": dpi,
-        "diagnostic_cell_size_m": DIAGNOSTIC_CELL_SIZE_M,
+        "LIDAR_RASTER_CELL_SIZE_M": LIDAR_RASTER_CELL_SIZE_M,
         "software": "mml-omap",
         "software_version": __version__,
     }
 
 
-def render_contour_png(
-    source_data: dict[str, Any],
-    output_path: Path,
-    *,
-    transform: Any,
-    dpi: int,
-    map_title_text: str | None,
-    map_maker: str,
-) -> dict[str, Any]:
-    try:
-        from PIL import Image, ImageDraw
-        import numpy as np
-    except ImportError as exc:
-        raise RuntimeError("LiDAR contour diagnostic rendering requires pillow and numpy") from exc
-
-    from .cli import (
-        contour_features_from_xyz_grid,
-        draw_pillow_text_fit,
-        iter_geometry_parts,
-        lidar_footer_text,
-        map_title,
-        pillow_layout_font,
-    )
-
-    metrics = diagnostic_plot_geometry(transform, dpi)
-    px_per_mm = float(metrics["px_per_mm"])
-    width = int(metrics["width"])
-    height = int(metrics["height"])
-    plot_left = int(metrics["plot_left"])
-    plot_top = int(metrics["plot_top"])
-    image = np.full((height, width, 4), 255, dtype=np.uint8)
-    draw_frame(image, metrics)
-    pil_image = Image.fromarray(image, mode="RGBA")
-    draw = ImageDraw.Draw(pil_image)
-    contour_features = contour_features_from_xyz_grid(
-        source_data["xs"],
-        source_data["ys"],
-        source_data["elevation_points"],
-        interval_m=1.0,
-        index_contour_every=5,
-    )
-
-    def to_px(coordinate: Any) -> tuple[float, float]:
-        x_mm, y_mm = transform.to_mm(coordinate)
-        return x_mm * px_per_mm, y_mm * px_per_mm
-
-    for feature in contour_features:
-        symbol = feature["properties"].get("symbol")
-        color = (210, 30, 30, 255) if symbol == "index_contour" else (60, 60, 60, 255)
-        width_px = max(1, int(round((0.22 if symbol == "index_contour" else 0.12) * px_per_mm)))
-        for part in iter_geometry_parts(feature.get("geometry") or {}):
-            if part["type"] != "LineString":
-                continue
-            points = [to_px(point) for point in part.get("coordinates") or []]
-            if len(points) >= 2:
-                draw.line(points, fill=color, width=width_px)
-    title_font = pillow_layout_font(max(12, int(round(3.2 * px_per_mm))))
-    footer_font = pillow_layout_font(max(10, int(round(2.6 * px_per_mm))))
-    text_x = max(2, plot_left)
-    title = f"{map_title(output_path, map_title_text)} LiDAR 1 m contours"
-    legend = f"1 m interval, red every 5 m | {len(contour_features)} contour features"
-    draw_pillow_text_fit(draw, (text_x, max(2, plot_top - int(round(4.0 * px_per_mm)))), title, fill=(0, 0, 0, 255), font=title_font, max_width_px=width - text_x - 2)
-    draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(5.0 * px_per_mm)))), lidar_footer_text(transform, map_maker), fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
-    draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(2.8 * px_per_mm)))), legend, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    pil_image.save(output_path)
-    return {
-        "path": str(output_path),
-        "contour_interval_m": 1.0,
-        "index_contour_every_m": 5.0,
-        "feature_count": len(contour_features),
-        "software": "mml-omap",
-        "software_version": __version__,
-    }
-
-
-def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: Path, args: Any, transform: Any) -> dict[str, Any]:
+def render_lidar_raster_pngs(source_data: dict[str, Any], output_base: Path, args: Any, transform: Any) -> dict[str, Any]:
     try:
         import numpy as np
     except ImportError as exc:
-        raise RuntimeError("LaserScan-style diagnostics require numpy") from exc
+        raise RuntimeError("LiDAR raster support layers require numpy") from exc
 
     from .cli import map_title, progress
 
     raster_dir = output_base.parent / "lidar-rasters"
     raster_stem = output_base.name
     progress("Preparing LiDAR raster support layers from ground grid and point cloud...")
-    surfaces = diagnostic_surfaces(source_data, transform)
+    surfaces = raster_surfaces(source_data, transform)
     reports: dict[str, Any] = {}
 
     progress("Rendering LiDAR raster: median point height...")
@@ -614,16 +568,6 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
     )
     reports["return_types"] = return_type_report
 
-    progress("Rendering LiDAR raster: 1 m contour support layer...")
-    reports["contours_1m"] = render_contour_png(
-        source_data,
-        raster_dir / f"{raster_stem}-contours-1m.png",
-        transform=transform,
-        dpi=args.dpi,
-        map_title_text=args.map_title,
-        map_maker=args.map_maker,
-    )
-
     for prefix, values in (("ground", surfaces["ground_height"]), ("surface", surfaces["surface_height"])):
         progress(f"Rendering LiDAR rasters: {prefix} gradient, hillshade, and slope...")
         gradient, z_min, z_max = height_gradient_rgb(values)
@@ -643,7 +587,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
             transform=transform,
             dpi=args.dpi,
             title=f"{map_title(output_base, args.map_title)} LiDAR {prefix} hillshade",
-            legend="Analytical hillshade from 1 m diagnostic surface",
+            legend="Analytical hillshade from 1 m raster surface",
             map_maker=args.map_maker,
         )
         slope_rgb, slope_max = grayscale_rgb(slope_degrees(values), min_value=0.0, max_value=45.0, invert=True)
@@ -685,6 +629,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
         legend=f"Red: no object point | black-white: lowest object height above ground per 1 m x 1 m cell, 0-{min_object_max:.0f} m",
         map_maker=args.map_maker,
         color_scale=grayscale_scale("0 m", f"{min_object_max:.0f} m"),
+        swatches=[((210, 30, 30), "No object point")],
     )
 
     progress("Rendering LiDAR raster: object point count up to 5 m...")
@@ -701,7 +646,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
     )
 
     progress("Rendering LiDAR raster: vegetation height...")
-    vegetation_rgb, vegetation_max = grayscale_rgb(np.nan_to_num(surfaces["vegetation_height"], nan=0.0), min_value=0.0)
+    vegetation_rgb, vegetation_max = green_height_rgb(np.nan_to_num(surfaces["vegetation_height"], nan=0.0), min_value=0.0)
     vegetation_rgb[np.isnan(surfaces["vegetation_height"])] = (255, 255, 255)
     reports["vegetation_height"] = render_raster_png(
         vegetation_rgb,
@@ -709,9 +654,10 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
         transform=transform,
         dpi=args.dpi,
         title=f"{map_title(output_base, args.map_title)} LiDAR vegetation height",
-        legend=f"Vegetation return height above ground, white at >= {vegetation_max:.1f} m",
+        legend=f"Vegetation return height above ground, pale-to-green ramp up to {vegetation_max:.1f} m",
         map_maker=args.map_maker,
-        color_scale=grayscale_scale("0 m", f"{vegetation_max:.1f} m"),
+        color_scale=green_scale("0 m", f"{vegetation_max:.1f} m"),
+        swatches=[((255, 255, 255), "No vegetation return")],
     )
     progress(f"Wrote {len(reports)} LiDAR raster PNGs to {raster_dir}.")
     return reports

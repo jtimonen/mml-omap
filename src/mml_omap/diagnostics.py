@@ -68,6 +68,49 @@ def draw_frame(image: Any, metrics: dict[str, int | float]) -> None:
     image[plot_top:plot_bottom, plot_right - 1, 0:3] = 0
 
 
+def raster_to_page_image(rgb: Any, transform: Any, metrics: dict[str, int | float]) -> Any:
+    from PIL import Image
+    import numpy as np
+
+    source = Image.fromarray(np.flipud(rgb).astype("uint8"), mode="RGB")
+    width = int(metrics["width"])
+    height = int(metrics["height"])
+    px_per_mm = float(metrics["px_per_mm"])
+    scale_m_per_px = transform.scale / (1000.0 * px_per_mm)
+    cell_size = DIAGNOSTIC_CELL_SIZE_M
+    cos_a = transform._cos_declination
+    sin_a = transform._sin_declination
+    left_m = transform.map_left_mm * transform.scale / 1000.0
+    top_m = transform.map_top_mm * transform.scale / 1000.0
+    page_to_source = (
+        cos_a * scale_m_per_px / cell_size,
+        -sin_a * scale_m_per_px / cell_size,
+        (
+            transform.center_x
+            - transform.min_x
+            + cos_a * (-left_m - transform.width_m / 2.0)
+            - sin_a * (transform.height_m / 2.0 + top_m)
+        )
+        / cell_size,
+        sin_a * scale_m_per_px / cell_size,
+        cos_a * scale_m_per_px / cell_size,
+        (
+            transform.max_y
+            - transform.center_y
+            - sin_a * (-left_m - transform.width_m / 2.0)
+            - cos_a * (transform.height_m / 2.0 + top_m)
+        )
+        / cell_size,
+    )
+    return source.transform(
+        (width, height),
+        Image.Transform.AFFINE,
+        page_to_source,
+        resample=Image.Resampling.NEAREST,
+        fillcolor=(255, 255, 255),
+    ).convert("RGBA")
+
+
 def grid_array_from_xyz_grid(xs: list[float], ys: list[float], points: dict[tuple[float, float], float]) -> Any:
     import numpy as np
 
@@ -399,12 +442,7 @@ def render_raster_png(
     height = int(metrics["height"])
     plot_left = int(metrics["plot_left"])
     plot_top = int(metrics["plot_top"])
-    image = np.full((height, width, 4), 255, dtype=np.uint8)
-    pil_image = Image.fromarray(image, mode="RGBA")
-    draw = ImageDraw.Draw(pil_image)
-    for row in range(rgb.shape[0]):
-        for column in range(rgb.shape[1]):
-            draw.polygon(cell_pixel_polygon(transform, metrics, column, row), fill=tuple(int(v) for v in rgb[row, column]) + (255,))
+    pil_image = raster_to_page_image(rgb, transform, metrics)
     image = np.asarray(pil_image, dtype=np.uint8).copy()
     draw_frame(image, metrics)
     pil_image = Image.fromarray(image, mode="RGBA")
@@ -538,9 +576,11 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
 
     raster_dir = output_base.parent / "lidar-rasters"
     raster_stem = output_base.name
+    progress("Preparing LiDAR raster support layers from ground grid and point cloud...")
     surfaces = diagnostic_surfaces(source_data, transform)
     reports: dict[str, Any] = {}
 
+    progress("Rendering LiDAR raster: median point height...")
     median_height, occupied_cells, point_count = median_height_surface(source_data, transform)
     height_rgb, z_min, z_max = height_gradient_rgb(median_height)
     reports["median_point_height"] = render_raster_png(
@@ -554,6 +594,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
         color_scale=viridis_scale(z_min, z_max),
     )
 
+    progress("Rendering LiDAR raster: dominant return type...")
     return_type_rgb, return_type_point_counts, return_type_cell_counts = return_type_surface(source_data, transform)
     return_type_report = render_raster_png(
         return_type_rgb,
@@ -573,6 +614,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
     )
     reports["return_types"] = return_type_report
 
+    progress("Rendering LiDAR raster: 1 m contour support layer...")
     reports["contours_1m"] = render_contour_png(
         source_data,
         raster_dir / f"{raster_stem}-contours-1m.png",
@@ -583,6 +625,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
     )
 
     for prefix, values in (("ground", surfaces["ground_height"]), ("surface", surfaces["surface_height"])):
+        progress(f"Rendering LiDAR rasters: {prefix} gradient, hillshade, and slope...")
         gradient, z_min, z_max = height_gradient_rgb(values)
         reports[f"{prefix}_gradient"] = render_raster_png(
             gradient,
@@ -615,6 +658,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
             color_scale=grayscale_scale("0 deg", f"{slope_max:.0f} deg", invert=True),
         )
 
+    progress("Rendering LiDAR raster: ground coverage...")
     coverage_rgb = np.zeros((*surfaces["point_count"].shape, 3), dtype=np.uint8)
     coverage_rgb[surfaces["point_count"] == 0] = (0, 120, 220)
     coverage_rgb[(surfaces["point_count"] > 0) & (surfaces["ground_count"] == 0)] = (245, 215, 45)
@@ -629,6 +673,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
         map_maker=args.map_maker,
     )
 
+    progress("Rendering LiDAR raster: minimum object height...")
     min_object_rgb, min_object_max = grayscale_rgb(np.nan_to_num(surfaces["min_object_height"], nan=0.0), min_value=0.0, max_value=5.0)
     min_object_rgb[np.isnan(surfaces["min_object_height"])] = (210, 30, 30)
     reports["minimum_object_height"] = render_raster_png(
@@ -642,6 +687,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
         color_scale=grayscale_scale("0 m", f"{min_object_max:.0f} m"),
     )
 
+    progress("Rendering LiDAR raster: object point count up to 5 m...")
     point_count_rgb, count_max = grayscale_rgb(surfaces["object_count_le5"].astype(float), min_value=0.0)
     reports["point_count_up_to_5m"] = render_raster_png(
         point_count_rgb,
@@ -654,6 +700,7 @@ def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: P
         color_scale=grayscale_scale("0", f"{count_max:.0f}"),
     )
 
+    progress("Rendering LiDAR raster: vegetation height...")
     vegetation_rgb, vegetation_max = grayscale_rgb(np.nan_to_num(surfaces["vegetation_height"], nan=0.0), min_value=0.0)
     vegetation_rgb[np.isnan(surfaces["vegetation_height"])] = (255, 255, 255)
     reports["vegetation_height"] = render_raster_png(

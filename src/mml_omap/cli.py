@@ -1613,26 +1613,34 @@ def ground_grid_from_lidar_points(
     sorted_cells = flat_cells[order]
     sorted_z = ground[:, 2][order]
     unique_cells, first_indexes, counts = np.unique(sorted_cells, return_index=True, return_counts=True)
-    cell_estimates = np.empty(len(unique_cells), dtype=float)
-    cell_noise_values = np.empty(len(unique_cells), dtype=float)
-    residual_chunks: list[Any] = []
-    progress(f"Aggregating {len(unique_cells)} observed ground grid cells...")
-    for index, (start, count) in enumerate(zip(first_indexes, counts)):
+    cell_rows = (unique_cells // columns).astype(int)
+    cell_columns = (unique_cells % columns).astype(int)
+    cell_estimates = sorted_z[first_indexes].astype(float, copy=True)
+    residuals = np.zeros(len(sorted_z), dtype=float)
+    multi_mask = counts > 1
+    multi_indexes = np.flatnonzero(multi_mask)
+    progress(
+        f"Aggregating {len(unique_cells)} observed ground grid cells "
+        f"({len(multi_indexes)} with multiple returns)..."
+    )
+    for index in multi_indexes:
+        start = int(first_indexes[index])
+        count = int(counts[index])
         sample = sorted_z[start : start + count]
         estimate = float(np.quantile(sample, ground_quantile))
         cell_estimates[index] = estimate
-        residual = np.abs(sample - estimate)
-        residual_chunks.append(residual)
-    residuals = np.concatenate(residual_chunks) if residual_chunks else np.asarray([], dtype=float)
+        residuals[start : start + count] = np.abs(sample - estimate)
     global_noise_m = robust_noise_m(residuals, default=0.15)
-    for index, (cell, start, count) in enumerate(zip(unique_cells, first_indexes, counts)):
-        sample = sorted_z[start : start + count]
-        row = int(cell // columns)
-        column = int(cell % columns)
-        grid[row, column] = cell_estimates[index]
-        cell_noise_m = robust_noise_m(np.abs(sample - cell_estimates[index]), default=global_noise_m)
-        cell_noise_values[index] = cell_noise_m
-        confidence[row, column] = int(count) / max(cell_noise_m, 0.05) ** 2
+    cell_noise_values = np.full(len(unique_cells), global_noise_m, dtype=float)
+    for index in multi_indexes:
+        start = int(first_indexes[index])
+        count = int(counts[index])
+        cell_noise_values[index] = robust_noise_m(
+            residuals[start : start + count],
+            default=global_noise_m,
+        )
+    grid[cell_rows, cell_columns] = cell_estimates
+    confidence[cell_rows, cell_columns] = counts / np.maximum(cell_noise_values, 0.05) ** 2
 
     known_row, known_column = np.where(~np.isnan(grid))
     known_xy = np.column_stack((known_column.astype(float), known_row.astype(float))) * cell_size_m
@@ -1687,6 +1695,7 @@ def ground_grid_from_lidar_points(
         weights = gaussian_filter(confidence, sigma=sigma_cells, mode="nearest")
         grid = weighted / np.maximum(weights, 1e-12)
 
+    progress(f"Packaging {columns * rows_count} ground grid cells for contour and raster generation...")
     points = {
         (xs[column], ys[row]): float(grid[row, column])
         for row in range(rows_count)
@@ -1782,6 +1791,7 @@ def lidar_vegetation_features(
 ) -> list[dict[str, Any]]:
     if cell_size_m <= 0:
         raise ValueError("--cell-size-m must be greater than zero")
+    progress(f"Indexing {len(rows)} LiDAR returns for vegetation extraction...")
     min_x = min(row[0] for row in rows)
     min_y = min(row[1] for row in rows)
     ground: dict[tuple[int, int], float] = {}
@@ -1796,6 +1806,7 @@ def lidar_vegetation_features(
                 ground[cell] = z
     if not ground:
         raise ValueError("Vegetation extraction requires ground-classified points")
+    progress(f"Classifying vegetation candidates across {len(ground)} ground-height cells...")
     for x, y, z, classification in rows:
         normalized_classification = normalize_lidar_classification(classification)
         if not lidar_return_can_support_vegetation(normalized_classification):
@@ -1830,6 +1841,7 @@ def lidar_vegetation_features(
     for symbol, cells in cells_by_symbol.items():
         if not cells:
             continue
+        progress(f"Dissolving {len(cells)} vegetation cells for ISOM {symbol}...")
         cells = continuous_region_cells(cells, min_area_m2=DEFAULT_GREEN_MIN_REGION_AREA_M2)
         if not cells:
             continue
@@ -3571,6 +3583,7 @@ def combined_map_from_source_data(source_data: dict[str, Any], args: argparse.Na
     xs = source_data["xs"]
     ys = source_data["ys"]
     elevation_points = source_data["elevation_points"]
+    progress(f"Generating {interval_m:g} m contours from the ground model...")
     contour_features = contour_features_from_xyz_grid(
         xs,
         ys,
@@ -3578,6 +3591,7 @@ def combined_map_from_source_data(source_data: dict[str, Any], args: argparse.Na
         interval_m=interval_m,
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
+    progress("Generating candidate cliff lines from ground-model slope...")
     cliff_features = cliff_features_from_xyz_grid(
         xs,
         ys,
@@ -3585,6 +3599,7 @@ def combined_map_from_source_data(source_data: dict[str, Any], args: argparse.Na
         slope_threshold_deg=args.slope_threshold_deg,
         min_length_m=args.min_cliff_length_m,
     )
+    progress("Generating candidate vegetation polygons from LiDAR returns...")
     vegetation_features = lidar_vegetation_features(
         source_data["lidar_rows"],
         cell_size_m=args.cell_size_m,
@@ -3646,8 +3661,11 @@ def build_combined_map(args: argparse.Namespace) -> tuple[dict[str, Any], dict[s
 def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
     source_data = build_source_data(args)
+    progress("Generating LiDAR raster support images...")
     ensure_lidar_diagnostic_reports(source_data, output_base, args)
+    progress("Generating combined vector map features...")
     combined, report = combined_map_from_source_data(source_data, args, interval_m=args.interval_m)
+    progress("Writing GeoJSON, terrain report, PNG, and PDF outputs...")
     render_build_outputs(output_base, combined, report, args, source_data=source_data)
     return 0
 

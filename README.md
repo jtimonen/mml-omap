@@ -70,7 +70,7 @@ and downloaded source data under `builds/examples/<name>/`.
 | --- | --- | --- |
 | `uv run mml-omap ekp` | Espoon keskuspuisto | `371255,6673869,373305,6675299` |
 | `uv run mml-omap kotka-jukola` | Kymi airfield / Kotka-Jukola training-ban area | `492900,6715050,495700,6719150` |
-| `uv run mml-omap puijo` | Puijon torni | `532615,6974711,534029,6976689` |
+| `uv run mml-omap puijo` | Puijo | `532615,6974711,534029,6976689` |
 | `uv run mml-omap vuokatinvaara` | Vuokatinvaara | `560649,7110874,562649,7113674` |
 
 Rebuild an example from existing files in its `downloads/` directory without

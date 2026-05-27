@@ -8,8 +8,9 @@ if [[ ! -d "$root" ]]; then
 fi
 
 find "$root" \
-  -path '*/downloads/*' -prune -o \
-  -type f \( \
+  -type f \
+  ! -path '*/downloads/*' \
+  \( \
     -name '*.geojson' -o \
     -name '*.png' -o \
     -name '*.pdf' -o \
@@ -18,5 +19,8 @@ find "$root" \
   \) -delete
 
 find "$root" \
-  -path '*/downloads' -prune -o \
-  -type d -empty -delete
+  -depth \
+  -type d \
+  ! -path '*/downloads' \
+  ! -path '*/downloads/*' \
+  -empty -delete

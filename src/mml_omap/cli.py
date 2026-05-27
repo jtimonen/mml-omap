@@ -4290,7 +4290,7 @@ def build_parser() -> argparse.ArgumentParser:
     puijo = subparsers.add_parser(
         "puijo",
         parents=[common_api, common_example],
-        help="Build the Puijo example around Puijon torni.",
+        help="Build the Puijo example.",
     )
     puijo.set_defaults(func=command_puijo)
 

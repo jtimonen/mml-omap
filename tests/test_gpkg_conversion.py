@@ -365,6 +365,18 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertEqual(feature_symbol(feature), "field")
 
+    def test_airfield_areas_map_to_open_land(self) -> None:
+        for table in ("lentokenttaalue", "lentokentankiitotie"):
+            object_type, symbol = cli.classify_feature(
+                table,
+                {"kohdeluokka": 32400},
+                {"type": "Polygon", "coordinates": []},
+                DEFAULT_TABLE_RULES[table],
+            )
+
+            self.assertEqual(object_type, "area")
+            self.assertEqual(symbol, "field")
+
     def test_svg_render_includes_layout_metadata_and_north_lines(self) -> None:
         geojson = {"type": "FeatureCollection", "features": []}
         with tempfile.TemporaryDirectory() as directory:

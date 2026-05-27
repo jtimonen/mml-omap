@@ -61,76 +61,30 @@ Do not commit `.env`.
 - MML 0.5 p laser scanning data downloaded automatically from
   `laserkeilausaineisto_05_karttalehti`.
 
-## Espoon Keskuspuisto Example
+## Examples
 
-This 1:10000 example is centered on Espoon keskuspuisto at
-`60.1880680, 24.6967986`. The bbox is `371255,6673869,373305,6675299` in
-EPSG:3067 meters.
+Built-in 1:10000 examples write map outputs, terrain reports, LiDAR
+diagnostics, and downloaded source data under `builds/examples/<name>/`.
 
-All generated files go under `builds/examples/espoo-keskuspuisto/`, which is
-easy to gitignore or delete.
+| Command | Area | EPSG:3067 bbox |
+| --- | --- | --- |
+| `uv run mml-omap ekp` | Espoon keskuspuisto | `371255,6673869,373305,6675299` |
+| `uv run mml-omap kotka-jukola` | Kymi airfield / Kotka-Jukola training-ban area | `492900,6715050,495700,6719150` |
+| `uv run mml-omap puijo` | Puijon torni | `532615,6974711,534029,6976689` |
+| `uv run mml-omap vuokatinvaara` | Vuokatinvaara | `560649,7110874,562649,7113674` |
 
-```sh
-uv run mml-omap ekp
-```
-
-The command writes:
-
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.geojson`
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.png`
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.pdf`
-- matching `espoo-keskuspuisto-2_5m.*` and `espoo-keskuspuisto-5m.*` outputs
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-lidar-points.png`
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-lidar-return-types.png`
-- LaserScan-style LiDAR diagnostics including 1 m contours, ground/surface
-  gradient, hillshade, slope, ground coverage, minimum object height, low
-  object point count, and vegetation height PNGs
-- `espoo-keskuspuisto-1m-terrain-report.json`,
-  `espoo-keskuspuisto-2_5m-terrain-report.json`, and
-  `espoo-keskuspuisto-5m-terrain-report.json`
-- `builds/examples/espoo-keskuspuisto/downloads/`
-
-## Kotka-Jukola Example
-
-This 1:10000 example is centered around Kymi airfield and covers part of
-the Kotka-Jukola 2026 harjoituskieltoalue shown on the event site. The bbox is
-`492900,6713000,495700,6717100` in EPSG:3067 meters.
-
-All generated files go under `builds/examples/kotka-jukola/`.
+Rebuild an example from existing files in its `downloads/` directory without
+contacting MML:
 
 ```sh
-uv run mml-omap kotka-jukola
+uv run mml-omap ekp --use-existing-downloads
 ```
 
-The command writes `kotka-jukola-1m.*`, `kotka-jukola-2_5m.*`, and
-`kotka-jukola-5m.*` map outputs, shared LiDAR diagnostics, terrain reports, and
-the source downloads.
-
-## Puijo Example
-
-This 1:10000 example is around Puijon torni. The bbox
-is `532615,6974711,534029,6976689` in EPSG:3067 meters.
+Remove generated build artifacts while keeping downloaded source files:
 
 ```sh
-uv run mml-omap puijo
+bash tools/clean-builds.sh
 ```
-
-The command writes `puijo-1m.*`, `puijo-2_5m.*`, and `puijo-5m.*` map outputs,
-shared LiDAR diagnostics, terrain reports, and the source downloads under
-`builds/examples/puijo/`.
-
-## Vuokatinvaara Example
-
-This 1:10000 example is around Vuokatinvaara and fits on A4 portrait. The bbox
-is `560649,7112274,562649,7115074` in EPSG:3067 meters.
-
-```sh
-uv run mml-omap vuokatinvaara
-```
-
-The command writes `vuokatinvaara-1m.*`, `vuokatinvaara-2_5m.*`, and
-`vuokatinvaara-5m.*` map outputs, shared LiDAR diagnostics, terrain reports,
-and the source downloads under `builds/examples/vuokatinvaara/`.
 
 ## What It Generates
 

@@ -54,6 +54,8 @@ Features without an ISOM symbol assignment are skipped by default. With
 | `niitty` | all | `401` | Open land | Open-land proxy. |
 | `muuavoinalue` | all | `401` | Open land | Open-land proxy. |
 | `puisto` | all | `401` | Open land | Open-land proxy; may be wrong for wooded parks. |
+| `lentokenttaalue` | all | `401` | Open land | Airfield area proxy; paved/private access semantics are not inferred. |
+| `lentokentankiitotie` | all | `401` | Open land | Runway area proxy so airfields do not render as outline-only gaps. |
 | `tieviiva` | `12111`, `12112`, `12121`, `12122`, `12131`, `12132` | `502` | Wide road | Mapped as wide road with black edges and brown infill. |
 | `tieviiva` | `12141`, `12142` | `503` | Road | Small driveable road proxy. |
 | `tieviiva` | `12151`, `12152` | none | none | Ferry/lossi transport lines are not rendered as terrain roads. |
@@ -85,7 +87,6 @@ from downloaded MML laser scanning point clouds:
 | MML table | Reason |
 | --- | --- |
 | `paikannimi` | Place-name labels are not numbered ISOM terrain/object symbols. |
-| `urheilujavirkistysalue` | all | `401` | Open land | Recreation/sports areas such as football fields are rendered as open land instead of black outline-only areas. |
 | Any unmapped table | No documented ISOM mapping has been assigned yet. |
 
 ## Known Gaps

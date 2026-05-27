@@ -11,6 +11,14 @@
   coverage, minimum object height, object point count up to 5 m, and vegetation
   height.
 - Terrain reports now include the new `laserscan_diagnostics` report block.
+- Added `--use-existing-downloads` for `build` and the built-in examples.
+- Added `tools/clean-builds.sh` to remove generated build artifacts while
+  preserving downloaded source files under `downloads/`.
+- Mapped MML airfield and runway area tables to ISOM `401` Open land so the
+  Kymi airfield example does not render as edge-only linework.
+- Moved the LiDAR diagnostic raster implementation into
+  `src/mml_omap/diagnostics.py`.
+- Shifted the Kotka-Jukola example north and the Vuokatinvaara example south.
 
 ## 0.1.9
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0.dev0
+
+- Started the `0.2.0` development version.
+- Changed the LiDAR point-height diagnostic from raw point plotting to 1 m
+  raster cells colored by median height, so perceived darkness no longer tracks
+  point density.
+- Added LaserScan-style LiDAR diagnostic PNGs: 1 m contours with every fifth
+  contour red, ground and surface gradient/shading/slope views, ground
+  coverage, minimum object height, object point count up to 5 m, and vegetation
+  height.
+- Terrain reports now include the new `laserscan_diagnostics` report block.
+
 ## 0.1.9
 
 - Bumped the package release version to `0.1.9`.

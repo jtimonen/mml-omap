@@ -30,6 +30,7 @@ from mml_omap.cli import (
     read_env_file_value,
     render_lidar_height_png,
     render_lidar_return_type_png,
+    render_laserscan_diagnostic_pngs,
     render_output_base,
     render_pdf,
     render_svg,
@@ -668,6 +669,55 @@ class OrienteeringBoundsTest(unittest.TestCase):
             self.assertEqual(report["return_type_counts"]["high_vegetation"], 1)
             self.assertEqual(report["return_type_counts"]["building"], 1)
             self.assertEqual(report["software_version"], __version__)
+
+    def test_laserscan_diagnostics_write_expected_png_set(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_base = Path(directory) / "demo"
+            xs = [0.0, 1.0, 2.0]
+            ys = [0.0, 1.0, 2.0]
+            elevation_points = {(x, y): x + y for x in xs for y in ys}
+            source_data = {
+                "bbox": [0.0, 0.0, 2.0, 2.0],
+                "magnetic_declination_deg": 0.0,
+                "xs": xs,
+                "ys": ys,
+                "elevation_points": elevation_points,
+                "lidar_rows": [
+                    (0.2, 0.2, 0.4, 2),
+                    (0.2, 0.2, 1.4, 3),
+                    (1.2, 0.2, 1.4, 2),
+                    (1.2, 0.2, 3.2, 5),
+                    (0.2, 1.2, 1.4, 2),
+                    (0.2, 1.2, 2.2, 1),
+                ],
+            }
+            args = argparse.Namespace(
+                scale=100,
+                margin_mm=5.0,
+                dpi=96,
+                map_title="Demo",
+                map_maker="mml-omap",
+            )
+
+            reports = render_laserscan_diagnostic_pngs(source_data, output_base, args)
+
+            expected = {
+                "contours_1m",
+                "ground_gradient",
+                "ground_shading",
+                "ground_slope",
+                "surface_gradient",
+                "surface_shading",
+                "surface_slope",
+                "ground_coverage",
+                "minimum_object_height",
+                "point_count_up_to_5m",
+                "vegetation_height",
+            }
+            self.assertEqual(set(reports), expected)
+            for report in reports.values():
+                self.assertTrue(Path(report["path"]).exists())
+                self.assertEqual(Path(report["path"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
 
     def test_extract_laser_paths_accepts_direct_laz_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

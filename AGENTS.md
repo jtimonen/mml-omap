@@ -1,4 +1,4 @@
-- Read the ISOM specification in `references/` and
+- Read the ISOM specification in `reference/` and
   https://omapwiki.orienteering.sport/specifications/isom/ before changing
   symbol dimensions, symbol mappings, rendering order, or map-generation
   algorithms.

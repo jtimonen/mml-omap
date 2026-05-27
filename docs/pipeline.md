@@ -69,12 +69,16 @@ report includes the contour interval, downloaded laser sheets, point-cloud grid
 parameters, global and per-cell noise estimates, interpolation distances, and
 generated feature counts.
 
-Each source-data build also writes two LiDAR diagnostic images on the same
-standard paper size, orientation, scale, and map frame as the rendered map.
-`*-lidar-points.png` plots every observed point inside the rendered map frame
-at its map position and colors it by height with the viridis color ramp.
-`*-lidar-return-types.png` plots the same point cloud colored by LAS return
-class group:
+Each source-data build writes LiDAR diagnostic images on the same standard
+paper size, orientation, scale, and map frame as the rendered map.
+
+`*-lidar-points.png` is now a 1 m raster-cell view rather than a raw point
+plot. Each occupied diagnostic cell is colored by the median point height in
+that square metre with the viridis color ramp. This keeps perceived brightness
+from being controlled by local point density.
+
+`*-lidar-return-types.png` plots the point cloud colored by LAS return class
+group:
 
 | Group | LAS classes | Diagnostic color |
 | --- | --- | --- |
@@ -87,10 +91,28 @@ class group:
 | Noise | `7`, `18` | magenta |
 | Other | all other or missing classes | gray |
 
-Both images include the same footer metadata as the map outputs plus point
-counts and legends. All terrain reports generated from the same source data
-reference those image paths, pixel sizes, point counts, software version, paper
-size, scale, and diagnostic-specific legend data.
+The build also writes a LaserScan-style diagnostic set under the
+`laserscan_diagnostics` terrain-report key:
+
+| Output suffix | Meaning |
+| --- | --- |
+| `-lidar-contours-1m.png` | Contour diagnostic at 1 m interval with every fifth contour red. |
+| `-lidar-ground-gradient.png` | Ground model height gradient. |
+| `-lidar-ground-shading.png` | Analytical hillshade from the ground model. |
+| `-lidar-ground-slope.png` | Ground model slope; darker pixels are steeper. |
+| `-lidar-surface-gradient.png` | Surface height gradient from highest observed return over ground. |
+| `-lidar-surface-shading.png` | Analytical hillshade from the surface model. |
+| `-lidar-surface-slope.png` | Surface slope; darker pixels are steeper. |
+| `-lidar-ground-coverage.png` | Blue means no point, yellow means points but no ground return, black means ground return present. |
+| `-lidar-minimum-object-height.png` | Red means no object point; black to white encodes the lowest object height above ground. |
+| `-lidar-point-count-up-to-5m.png` | Brighter cells have more non-ground object points up to 5 m above ground. |
+| `-lidar-vegetation-height.png` | Maximum vegetation-candidate return height above ground. |
+
+These diagnostics use 1 m cells, matching the OpenOrienteering LaserScan tool's
+typical pixel distance, but the implementation is independent and uses the
+existing `mml-omap` ground model and source point rows. The diagnostics are
+inspection rasters only; map feature generation still uses the algorithms
+described below.
 
 ## Ground Model
 

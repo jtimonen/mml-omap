@@ -7,7 +7,7 @@ laser scanning point clouds.
 
 The normal workflow is one command: download MML topographic vector data,
 download the covering 0.5 p LAZ map sheets, build the terrain model from the
-point cloud, then write GeoJSON, PNG, PDF, a LiDAR diagnostic PNG, and a terrain
+point cloud, then write GeoJSON, PNG, PDF, LiDAR diagnostic PNGs, and a terrain
 report. Rendered maps use the smallest A5, A4, or A3 portrait/landscape page
 that fits the requested map frame at the requested scale.
 
@@ -82,6 +82,9 @@ The command writes:
 - matching `espoo-keskuspuisto-2_5m.*` and `espoo-keskuspuisto-5m.*` outputs
 - `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-lidar-points.png`
 - `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-lidar-return-types.png`
+- LaserScan-style LiDAR diagnostics including 1 m contours, ground/surface
+  gradient, hillshade, slope, ground coverage, minimum object height, low
+  object point count, and vegetation height PNGs
 - `espoo-keskuspuisto-1m-terrain-report.json`,
   `espoo-keskuspuisto-2_5m-terrain-report.json`, and
   `espoo-keskuspuisto-5m-terrain-report.json`
@@ -100,9 +103,8 @@ uv run mml-omap kotka-jukola
 ```
 
 The command writes `kotka-jukola-1m.*`, `kotka-jukola-2_5m.*`, and
-`kotka-jukola-5m.*` map outputs, shared `kotka-jukola-lidar-points.png` and
-`kotka-jukola-lidar-return-types.png` diagnostics, terrain reports, and the
-source downloads.
+`kotka-jukola-5m.*` map outputs, shared LiDAR diagnostics, terrain reports, and
+the source downloads.
 
 ## Puijo Example
 
@@ -114,8 +116,8 @@ uv run mml-omap puijo
 ```
 
 The command writes `puijo-1m.*`, `puijo-2_5m.*`, and `puijo-5m.*` map outputs,
-shared `puijo-lidar-points.png` and `puijo-lidar-return-types.png` diagnostics,
-terrain reports, and the source downloads under `builds/examples/puijo/`.
+shared LiDAR diagnostics, terrain reports, and the source downloads under
+`builds/examples/puijo/`.
 
 ## Vuokatinvaara Example
 
@@ -127,9 +129,8 @@ uv run mml-omap vuokatinvaara
 ```
 
 The command writes `vuokatinvaara-1m.*`, `vuokatinvaara-2_5m.*`, and
-`vuokatinvaara-5m.*` map outputs, shared `vuokatinvaara-lidar-points.png` and
-`vuokatinvaara-lidar-return-types.png` diagnostics, terrain reports, and the
-source downloads under `builds/examples/vuokatinvaara/`.
+`vuokatinvaara-5m.*` map outputs, shared LiDAR diagnostics, terrain reports,
+and the source downloads under `builds/examples/vuokatinvaara/`.
 
 ## What It Generates
 

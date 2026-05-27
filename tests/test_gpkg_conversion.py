@@ -28,8 +28,6 @@ from mml_omap.cli import (
     infer_contour_interval_m,
     iof_symbol_metadata,
     read_env_file_value,
-    render_lidar_height_png,
-    render_lidar_return_type_png,
     render_laserscan_diagnostic_pngs,
     render_output_base,
     render_pdf,
@@ -631,58 +629,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertEqual(report["observation_model"], "elevation_observation(x,y) = mu(x,y) + epsilon")
         self.assertIn("global_noise_estimate_m", report)
 
-    def test_lidar_height_png_reports_viridis_point_render(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            output_path = Path(directory) / "points.png"
-            report = render_lidar_height_png(
-                [
-                    (0.0, 0.0, 10.0, 2),
-                    (1.0, 1.0, 12.0, 5),
-                    (2.0, 2.0, 14.0, 1),
-                ],
-                output_path,
-                transform=RenderTransform([0.0, 0.0, 2.0, 2.0], 100, 5),
-                dpi=96,
-            )
-
-            self.assertTrue(output_path.exists())
-            self.assertEqual(output_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual(report["height_color_ramp"], "viridis")
-            self.assertEqual(report["point_count"], 3)
-            self.assertEqual(report["paper_size"], "A5 portrait")
-            self.assertEqual(report["scale"], 100)
-            self.assertGreater(report["width_px"], report["plot_width_px"])
-            self.assertGreater(report["height_px"], report["plot_height_px"])
-            self.assertEqual(report["software_version"], __version__)
-
-    def test_lidar_return_type_png_reports_class_counts(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            output_path = Path(directory) / "types.png"
-            report = render_lidar_return_type_png(
-                [
-                    (0.0, 0.0, 10.0, 2),
-                    (0.2, 0.2, 10.0, 9),
-                    (0.4, 0.4, 10.0, 3),
-                    (0.6, 0.6, 10.0, 4),
-                    (0.8, 0.8, 10.0, 5),
-                    (1.0, 1.0, 10.0, 6),
-                ],
-                output_path,
-                transform=RenderTransform([0.0, 0.0, 1.0, 1.0], 100, 5),
-                dpi=96,
-            )
-
-            self.assertTrue(output_path.exists())
-            self.assertEqual(output_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual(report["return_type_counts"]["ground"], 1)
-            self.assertEqual(report["return_type_counts"]["water"], 1)
-            self.assertEqual(report["return_type_counts"]["low_vegetation"], 1)
-            self.assertEqual(report["return_type_counts"]["medium_vegetation"], 1)
-            self.assertEqual(report["return_type_counts"]["high_vegetation"], 1)
-            self.assertEqual(report["return_type_counts"]["building"], 1)
-            self.assertEqual(report["software_version"], __version__)
-
-    def test_laserscan_diagnostics_write_expected_png_set(self) -> None:
+    def test_lidar_rasters_write_expected_png_set(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_base = Path(directory) / "demo"
             xs = [0.0, 1.0, 2.0]
@@ -725,11 +672,15 @@ class OrienteeringBoundsTest(unittest.TestCase):
                 "minimum_object_height",
                 "point_count_up_to_5m",
                 "vegetation_height",
+                "median_point_height",
+                "return_types",
             }
             self.assertEqual(set(reports), expected)
             for report in reports.values():
                 self.assertTrue(Path(report["path"]).exists())
                 self.assertEqual(Path(report["path"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertIn("lidar-rasters", report["path"])
+            self.assertEqual(reports["return_types"]["cell_value"], "dominant_las_return_type")
 
     def test_extract_laser_paths_accepts_direct_laz_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

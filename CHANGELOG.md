@@ -3,21 +3,22 @@
 ## 0.2.0.dev0
 
 - Started the `0.2.0` development version.
-- Changed the LiDAR point-height diagnostic from raw point plotting to 1 m
-  raster cells colored by median height, so perceived darkness no longer tracks
-  point density.
-- Added LaserScan-style LiDAR diagnostic PNGs: 1 m contours with every fifth
-  contour red, ground and surface gradient/shading/slope views, ground
-  coverage, minimum object height, object point count up to 5 m, and vegetation
-  height.
-- Terrain reports now include the new `laserscan_diagnostics` report block.
-- Added `--use-existing-downloads` for `build` and the built-in examples.
+- Replaced the old top-level LiDAR point diagnostic PNGs with organized
+  `lidar-rasters/` support images.
+- Added LaserScan-style LiDAR raster PNGs: 1 m contours with every fifth
+  contour red, median point height, dominant return type per 1 m cell, ground
+  and surface gradient/shading/slope views, ground coverage, minimum object
+  height, object point count up to 5 m, and vegetation height.
+- Continuous LiDAR color rasters now include an in-image color-scale legend.
+- Terrain reports now include the new `lidar_rasters` report block.
+- Added `--reuse-downloads` for `build` and the built-in examples, with
+  `--use-existing-downloads` kept as an alias.
 - Added `tools/clean-builds.sh` to remove generated build artifacts while
   preserving downloaded source files under `downloads/`.
 - Mapped MML airfield and runway area tables to ISOM `401` Open land so the
   Kymi airfield example does not render as edge-only linework.
-- Moved the LiDAR diagnostic raster implementation into
-  `src/mml_omap/diagnostics.py`.
+- Moved LiDAR classification helpers into `src/mml_omap/lidar.py` and raster
+  generation into `src/mml_omap/diagnostics.py`.
 - Shifted the Kotka-Jukola example north and the Vuokatinvaara example south.
 
 ## 0.1.9

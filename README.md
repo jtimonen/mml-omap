@@ -7,7 +7,7 @@ laser scanning point clouds.
 
 The normal workflow is one command: download MML topographic vector data,
 download the covering 0.5 p LAZ map sheets, build the terrain model from the
-point cloud, then write GeoJSON, PNG, PDF, LiDAR diagnostic PNGs, and a terrain
+point cloud, then write GeoJSON, PNG, PDF, LiDAR raster PNGs, and a terrain
 report. Rendered maps use the smallest A5, A4, or A3 portrait/landscape page
 that fits the requested map frame at the requested scale.
 
@@ -63,8 +63,8 @@ Do not commit `.env`.
 
 ## Examples
 
-Built-in 1:10000 examples write map outputs, terrain reports, LiDAR
-diagnostics, and downloaded source data under `builds/examples/<name>/`.
+Built-in 1:10000 examples write map outputs, terrain reports, LiDAR rasters,
+and downloaded source data under `builds/examples/<name>/`.
 
 | Command | Area | EPSG:3067 bbox |
 | --- | --- | --- |
@@ -77,7 +77,7 @@ Rebuild an example from existing files in its `downloads/` directory without
 contacting MML:
 
 ```sh
-uv run mml-omap ekp --use-existing-downloads
+uv run mml-omap ekp --reuse-downloads
 ```
 
 Remove generated build artifacts while keeping downloaded source files:

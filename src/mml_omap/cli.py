@@ -29,14 +29,24 @@ from typing import Any
 import certifi
 
 from . import __version__
-from .diagnostics import (
-    DIAGNOSTIC_CELL_SIZE_M,
-    diagnostic_grid_shape as lidar_diagnostic_grid_shape,
-    diagnostic_plot_geometry as lidar_diagnostic_plot_geometry,
-    draw_frame as draw_lidar_diagnostic_frame,
-    paint_cell as paint_lidar_diagnostic_cell,
-)
 from .diagnostics import render_laserscan_diagnostic_pngs as render_laserscan_diagnostic_pngs_impl
+from .lidar import (
+    DEFAULT_GREEN_FIGHT_MIN_HITS,
+    DEFAULT_GREEN_FIGHT_RATIO,
+    DEFAULT_GREEN_GROUND_HEIGHT_M,
+    DEFAULT_GREEN_MAX_HEIGHT_M,
+    DEFAULT_GREEN_MIN_HITS,
+    DEFAULT_GREEN_MIN_REGION_AREA_M2,
+    DEFAULT_GREEN_SLOW_RATIO,
+    LIDAR_GROUND_CLASS,
+    LIDAR_UNCLASSIFIED_VEGETATION_CANDIDATE_CLASSES,
+    LIDAR_VEGETATION_CLASSES,
+    LIDAR_VEGETATION_EXCLUDED_CLASSES,
+    lidar_return_can_count_as_green,
+    lidar_return_can_support_vegetation,
+    lidar_return_type,
+    normalize_lidar_classification,
+)
 from .symbols import (
     DEFAULT_STYLE,
     IOF_NUMBER_TO_RENDER_SYMBOL,
@@ -132,18 +142,6 @@ DEFAULT_NORTH_LINE_SPACING_M = 300.0
 DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
 MML_LASER_MAP_SHEET_GRID_M = 3000.0
 DEFAULT_MML_JOB_ATTEMPTS = 3
-DEFAULT_GREEN_GROUND_HEIGHT_M = 0.8
-DEFAULT_GREEN_MAX_HEIGHT_M = 5.0
-DEFAULT_GREEN_SLOW_RATIO = 0.68
-DEFAULT_GREEN_FIGHT_RATIO = 1.13
-DEFAULT_GREEN_MIN_HITS = 8
-DEFAULT_GREEN_FIGHT_MIN_HITS = 24
-DEFAULT_GREEN_MIN_REGION_AREA_M2 = 200.0
-LIDAR_GROUND_CLASS = 2
-LIDAR_VEGETATION_CLASSES = {3, 4, 5}
-LIDAR_UNCLASSIFIED_VEGETATION_CANDIDATE_CLASSES = {0, 1}
-LIDAR_VEGETATION_EXCLUDED_CLASSES = {6, 7, 9, 17, 18}
-
 
 def read_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as file:
@@ -1869,26 +1867,6 @@ def lidar_vegetation_features(
     return features
 
 
-def normalize_lidar_classification(classification: int | None) -> int | None:
-    if classification is None:
-        return None
-    return int(classification) & 31
-
-
-def lidar_return_can_support_vegetation(classification: int | None) -> bool:
-    if classification in LIDAR_VEGETATION_EXCLUDED_CLASSES:
-        return False
-    return classification == LIDAR_GROUND_CLASS or lidar_return_can_count_as_green(classification)
-
-
-def lidar_return_can_count_as_green(classification: int | None) -> bool:
-    if classification in LIDAR_VEGETATION_CLASSES:
-        return True
-    if classification is None:
-        return True
-    return classification in LIDAR_UNCLASSIFIED_VEGETATION_CANDIDATE_CLASSES
-
-
 def continuous_region_cells(
     cells: list[tuple[float, float, float, float, int]],
     *,
@@ -2753,293 +2731,6 @@ def viridis_rgb_array(values: Any) -> Any:
     return np.rint(anchors[lower] + (anchors[upper] - anchors[lower]) * t).astype(np.uint8)
 
 
-def render_lidar_height_png(
-    rows: list[tuple[float, float, float, int | None]],
-    output_path: Path,
-    *,
-    transform: RenderTransform,
-    dpi: int,
-    map_title_text: str | None = None,
-    map_maker: str = "mml-omap",
-) -> dict[str, Any]:
-    try:
-        import numpy as np
-    except ImportError as exc:
-        raise RuntimeError("LiDAR point height PNG rendering requires numpy") from exc
-
-    metrics = lidar_diagnostic_plot_geometry(transform, dpi)
-    px_per_mm = float(metrics["px_per_mm"])
-    width = int(metrics["width"])
-    height = int(metrics["height"])
-    plot_left = int(metrics["plot_left"])
-    plot_top = int(metrics["plot_top"])
-    plot_width = int(metrics["plot_width"])
-    plot_height = int(metrics["plot_height"])
-    plot_right = int(metrics["plot_right"])
-    plot_bottom = int(metrics["plot_bottom"])
-    image = np.full((height, width, 4), 255, dtype=np.uint8)
-
-    raw = np.asarray(rows, dtype=float)
-    if raw.ndim != 2 or raw.shape[1] < 3:
-        raise ValueError("Point rows must contain x, y, z")
-    columns, rows_count = lidar_diagnostic_grid_shape(transform)
-    mask = (
-        np.isfinite(raw[:, 0])
-        & np.isfinite(raw[:, 1])
-        & np.isfinite(raw[:, 2])
-        & (raw[:, 0] >= transform.min_x)
-        & (raw[:, 0] <= transform.max_x)
-        & (raw[:, 1] >= transform.min_y)
-        & (raw[:, 1] <= transform.max_y)
-    )
-    finite_points = raw[mask]
-    point_count = int(len(finite_points))
-    occupied_cell_count = 0
-    if point_count:
-        column_indices = np.clip(
-            np.floor((finite_points[:, 0] - transform.min_x) / DIAGNOSTIC_CELL_SIZE_M).astype(int),
-            0,
-            columns - 1,
-        )
-        row_indices = np.clip(
-            np.floor((finite_points[:, 1] - transform.min_y) / DIAGNOSTIC_CELL_SIZE_M).astype(int),
-            0,
-            rows_count - 1,
-        )
-        flat_cells = row_indices * columns + column_indices
-        order = np.argsort(flat_cells)
-        sorted_cells = flat_cells[order]
-        sorted_z = finite_points[:, 2][order]
-        unique_cells, first_indexes, counts = np.unique(sorted_cells, return_index=True, return_counts=True)
-        cell_z = np.asarray(
-            [float(np.median(sorted_z[start : start + count])) for start, count in zip(first_indexes, counts)],
-            dtype=float,
-        )
-        occupied_cell_count = int(len(unique_cells))
-        z_min = float(np.quantile(cell_z, 0.01))
-        z_max = float(np.quantile(cell_z, 0.99))
-        if z_max <= z_min:
-            z_min = float(np.min(cell_z))
-            z_max = float(np.max(cell_z))
-        if z_max <= z_min:
-            z_max = z_min + 1.0
-        normalized = (cell_z - z_min) / (z_max - z_min)
-        colors = viridis_rgb_array(normalized)
-        for flat_cell, color in zip(unique_cells, colors):
-            row = int(flat_cell // columns)
-            column = int(flat_cell % columns)
-            paint_lidar_diagnostic_cell(image, transform, metrics, column, row, color)
-    else:
-        z_min = 0.0
-        z_max = 0.0
-
-    draw_lidar_diagnostic_frame(image, metrics)
-
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        pixels = bytearray(image.reshape(height * width * 4).tobytes())
-        write_png(output_path, width, height, pixels)
-    else:
-        pil_image = Image.fromarray(image, mode="RGBA")
-        draw = ImageDraw.Draw(pil_image)
-        title_font = pillow_layout_font(max(12, int(round(3.2 * px_per_mm))))
-        footer_font = pillow_layout_font(max(10, int(round(2.6 * px_per_mm))))
-        title = f"{map_title(output_path, map_title_text)} LiDAR point heights"
-        footer = lidar_footer_text(transform, map_maker)
-        legend = f"Median 1 m cell height: {z_min:.1f} m to {z_max:.1f} m (1st-99th percentile, clamped) | {occupied_cell_count} cells | {point_count} points"
-        text_x = max(2, plot_left)
-        draw_pillow_text_fit(draw, (text_x, max(2, plot_top - int(round(4.0 * px_per_mm)))), title, fill=(0, 0, 0, 255), font=title_font, max_width_px=width - text_x - 2)
-        draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(5.0 * px_per_mm)))), footer, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
-        draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(2.8 * px_per_mm)))), legend, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
-        available_right = width - plot_right
-        bar_width = max(8, int(round(2.5 * px_per_mm)))
-        bar_height = min(plot_height, max(24, int(round(35.0 * px_per_mm))))
-        if available_right >= bar_width + int(round(7.0 * px_per_mm)):
-            bar_x0 = plot_right + int(round(2.5 * px_per_mm))
-            bar_y0 = plot_top
-            label_x = bar_x0 + bar_width + int(round(1.4 * px_per_mm))
-        else:
-            bar_x0 = min(width - bar_width - 2, max(2, plot_right - bar_width - int(round(2.0 * px_per_mm))))
-            bar_y0 = plot_top + int(round(2.0 * px_per_mm))
-            label_x = max(2, bar_x0 - int(round(12.0 * px_per_mm)))
-        for offset in range(bar_height):
-            value = 1.0 - offset / max(bar_height - 1, 1)
-            color = tuple(int(channel) for channel in viridis_rgb_array(np.asarray([value], dtype=float))[0])
-            draw.line([(bar_x0, bar_y0 + offset), (bar_x0 + bar_width, bar_y0 + offset)], fill=(*color, 255))
-        draw.rectangle((bar_x0, bar_y0, bar_x0 + bar_width, bar_y0 + bar_height - 1), outline=(0, 0, 0, 255))
-        draw.text((label_x, bar_y0), f"{z_max:.1f} m", fill=(0, 0, 0, 255), font=footer_font)
-        draw.text((label_x, bar_y0 + bar_height - max(10, int(round(2.6 * px_per_mm)))), f"{z_min:.1f} m", fill=(0, 0, 0, 255), font=footer_font)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        pil_image.save(output_path)
-    report = {
-        "path": str(output_path),
-        "bbox": [transform.min_x, transform.min_y, transform.max_x, transform.max_y],
-        "paper_size": transform.paper_size,
-        "scale": transform.scale,
-        "width_px": width,
-        "height_px": height,
-        "plot_width_px": plot_width,
-        "plot_height_px": plot_height,
-        "plot_left_px": plot_left,
-        "plot_top_px": plot_top,
-        "dpi": dpi,
-        "pixels_per_m": 1000.0 * px_per_mm / transform.scale,
-        "point_count": point_count,
-        "occupied_cell_count": occupied_cell_count,
-        "diagnostic_cell_size_m": DIAGNOSTIC_CELL_SIZE_M,
-        "cell_value": "median_z_m",
-        "height_color_ramp": "viridis",
-        "height_color_min_m": z_min,
-        "height_color_max_m": z_max,
-        "height_color_range": "1st to 99th percentile, clamped",
-        "software": "mml-omap",
-        "software_version": __version__,
-    }
-    progress(
-        "Wrote LiDAR point height PNG "
-        f"to {output_path} with {occupied_cell_count} occupied 1 m cells colored by median height."
-    )
-    return report
-
-
-def lidar_return_type(classification: int | None) -> str:
-    normalized = normalize_lidar_classification(classification)
-    if normalized == LIDAR_GROUND_CLASS:
-        return "ground"
-    if normalized == 9:
-        return "water"
-    if normalized == 3:
-        return "low_vegetation"
-    if normalized == 4:
-        return "medium_vegetation"
-    if normalized == 5:
-        return "high_vegetation"
-    if normalized == 6:
-        return "building"
-    if normalized in {7, 18}:
-        return "noise"
-    return "other"
-
-
-LIDAR_RETURN_TYPE_STYLES: dict[str, tuple[str, tuple[int, int, int]]] = {
-    "ground": ("Ground", (166, 118, 64)),
-    "water": ("Water", (0, 143, 213)),
-    "low_vegetation": ("Low vegetation", (196, 230, 126)),
-    "medium_vegetation": ("Medium vegetation", (91, 184, 76)),
-    "high_vegetation": ("High vegetation", (0, 112, 60)),
-    "building": ("Building", (60, 60, 60)),
-    "noise": ("Noise", (180, 0, 180)),
-    "other": ("Other", (150, 150, 150)),
-}
-
-
-def render_lidar_return_type_png(
-    rows: list[tuple[float, float, float, int | None]],
-    output_path: Path,
-    *,
-    transform: RenderTransform,
-    dpi: int,
-    map_title_text: str | None = None,
-    map_maker: str = "mml-omap",
-) -> dict[str, Any]:
-    try:
-        import numpy as np
-    except ImportError as exc:
-        raise RuntimeError("LiDAR return-type PNG rendering requires numpy") from exc
-
-    px_per_mm = dpi / 25.4
-    width = max(1, int(round(transform.page_width_mm * px_per_mm)))
-    height = max(1, int(round(transform.page_height_mm * px_per_mm)))
-    plot_left = int(round(transform.map_left_mm * px_per_mm))
-    plot_top = int(round(transform.map_top_mm * px_per_mm))
-    plot_width = max(1, int(round(transform.map_width_mm * px_per_mm)))
-    plot_height = max(1, int(round(transform.map_height_mm * px_per_mm)))
-    plot_right = plot_left + plot_width
-    plot_bottom = plot_top + plot_height
-    image = np.full((height, width, 4), 255, dtype=np.uint8)
-    counts = {key: 0 for key in LIDAR_RETURN_TYPE_STYLES}
-
-    point_count = 0
-    for x_raw, y_raw, _z_raw, classification in rows:
-        if not math.isfinite(x_raw) or not math.isfinite(y_raw):
-            continue
-        x_mm, y_mm = transform.to_mm([x_raw, y_raw])
-        x_px = int(round(x_mm * px_per_mm))
-        y_px = int(round(y_mm * px_per_mm))
-        if not (plot_left <= x_px <= plot_right and plot_top <= y_px <= plot_bottom):
-            continue
-        return_type = lidar_return_type(classification)
-        _label, color = LIDAR_RETURN_TYPE_STYLES[return_type]
-        image[min(max(y_px, 0), height - 1), min(max(x_px, 0), width - 1), 0:3] = color
-        image[min(max(y_px, 0), height - 1), min(max(x_px, 0), width - 1), 3] = 255
-        counts[return_type] += 1
-        point_count += 1
-
-    image[plot_top, plot_left:plot_right, 0:3] = 0
-    image[plot_bottom - 1, plot_left:plot_right, 0:3] = 0
-    image[plot_top:plot_bottom, plot_left, 0:3] = 0
-    image[plot_top:plot_bottom, plot_right - 1, 0:3] = 0
-
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        pixels = bytearray(image.reshape(height * width * 4).tobytes())
-        write_png(output_path, width, height, pixels)
-    else:
-        pil_image = Image.fromarray(image, mode="RGBA")
-        draw = ImageDraw.Draw(pil_image)
-        title_font = pillow_layout_font(max(12, int(round(3.2 * px_per_mm))))
-        footer_font = pillow_layout_font(max(10, int(round(2.6 * px_per_mm))))
-        title = f"{map_title(output_path, map_title_text)} LiDAR return types"
-        footer = lidar_footer_text(transform, map_maker)
-        text_x = max(2, plot_left)
-        draw_pillow_text_fit(draw, (text_x, max(2, plot_top - int(round(4.0 * px_per_mm)))), title, fill=(0, 0, 0, 255), font=title_font, max_width_px=width - text_x - 2)
-        draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(4.2 * px_per_mm)))), footer, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
-        legend_x = plot_right + int(round(2.5 * px_per_mm))
-        if legend_x > width - int(round(35.0 * px_per_mm)):
-            legend_x = max(2, plot_left + int(round(1.5 * px_per_mm)))
-        legend_y = plot_top + int(round(2.0 * px_per_mm))
-        swatch = max(8, int(round(2.5 * px_per_mm)))
-        line_gap = max(12, int(round(4.0 * px_per_mm)))
-        for index, (key, (label, color)) in enumerate(LIDAR_RETURN_TYPE_STYLES.items()):
-            y = legend_y + index * line_gap
-            if y + swatch >= height:
-                break
-            draw.rectangle((legend_x, y, legend_x + swatch, y + swatch), fill=(*color, 255), outline=(0, 0, 0, 255))
-            draw.text((legend_x + swatch + 5, y), f"{label}: {counts[key]}", fill=(0, 0, 0, 255), font=footer_font)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        pil_image.save(output_path)
-
-    report = {
-        "path": str(output_path),
-        "bbox": [transform.min_x, transform.min_y, transform.max_x, transform.max_y],
-        "paper_size": transform.paper_size,
-        "scale": transform.scale,
-        "width_px": width,
-        "height_px": height,
-        "plot_width_px": plot_width,
-        "plot_height_px": plot_height,
-        "plot_left_px": plot_left,
-        "plot_top_px": plot_top,
-        "dpi": dpi,
-        "pixels_per_m": 1000.0 * px_per_mm / transform.scale,
-        "point_count": point_count,
-        "return_type_counts": counts,
-        "return_type_colors": {
-            key: {"label": label, "rgb": color}
-            for key, (label, color) in LIDAR_RETURN_TYPE_STYLES.items()
-        },
-        "software": "mml-omap",
-        "software_version": __version__,
-    }
-    progress(
-        "Wrote LiDAR return-type PNG "
-        f"to {output_path} with {point_count} points colored by LAS class group."
-    )
-    return report
-
-
 def render_laserscan_diagnostic_pngs(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
     return render_laserscan_diagnostic_pngs_impl(
         source_data,
@@ -3802,7 +3493,7 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
     archive_path = work_dir / "mml" / (output_base.stem + ".zip")
     if getattr(args, "use_existing_downloads", False):
         if not archive_path.exists():
-            raise RuntimeError(f"--use-existing-downloads requested but vector archive is missing: {archive_path}")
+            raise RuntimeError(f"--reuse-downloads requested but vector archive is missing: {archive_path}")
         progress(f"Using existing MML vector data from {archive_path}.")
     else:
         progress(f"Downloading MML vector data to {archive_path}...")
@@ -3814,7 +3505,7 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
     if getattr(args, "use_existing_downloads", False):
         laser_download_paths = existing_download_paths(laser_download_path, (".laz", ".zip"))
         if not laser_download_paths:
-            raise RuntimeError(f"--use-existing-downloads requested but no laser downloads match {laser_download_path}")
+            raise RuntimeError(f"--reuse-downloads requested but no laser downloads match {laser_download_path}")
         progress(f"Using {len(laser_download_paths)} existing MML laser download files.")
     else:
         progress(f"Downloading MML laser scanning sheets: {', '.join(laser_sheets)}")
@@ -3970,48 +3661,12 @@ def lidar_diagnostic_transform(source_data: dict[str, Any], args: argparse.Names
     )
 
 
-def ensure_lidar_point_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
-    existing = source_data.get("lidar_point_height_png")
-    if isinstance(existing, dict):
-        return existing
-    report = render_lidar_height_png(
-        source_data["lidar_rows"],
-        output_base.with_name(output_base.name + "-lidar-points").with_suffix(".png"),
-        transform=lidar_diagnostic_transform(source_data, args),
-        dpi=args.dpi,
-        map_title_text=args.map_title,
-        map_maker=args.map_maker,
-    )
-    source_data["lidar_point_height_png"] = report
-    return report
-
-
-def ensure_lidar_return_type_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
-    existing = source_data.get("lidar_return_type_png")
-    if isinstance(existing, dict):
-        return existing
-    report = render_lidar_return_type_png(
-        source_data["lidar_rows"],
-        output_base.with_name(output_base.name + "-lidar-return-types").with_suffix(".png"),
-        transform=lidar_diagnostic_transform(source_data, args),
-        dpi=args.dpi,
-        map_title_text=args.map_title,
-        map_maker=args.map_maker,
-    )
-    source_data["lidar_return_type_png"] = report
-    return report
-
-
 def ensure_lidar_diagnostic_reports(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
-    existing = source_data.get("laserscan_diagnostics")
+    existing = source_data.get("lidar_rasters")
     if not isinstance(existing, dict):
         existing = render_laserscan_diagnostic_pngs(source_data, output_base, args)
-        source_data["laserscan_diagnostics"] = existing
-    return {
-        "lidar_point_height_png": ensure_lidar_point_report(source_data, output_base, args),
-        "lidar_return_type_png": ensure_lidar_return_type_report(source_data, output_base, args),
-        "laserscan_diagnostics": existing,
-    }
+        source_data["lidar_rasters"] = existing
+    return {"lidar_rasters": existing}
 
 
 def render_build_outputs(
@@ -4562,7 +4217,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     common_example = argparse.ArgumentParser(add_help=False)
     common_example.add_argument(
+        "--reuse-downloads",
         "--use-existing-downloads",
+        dest="use_existing_downloads",
         action="store_true",
         help="Use files already present under the example downloads directory instead of contacting MML.",
     )
@@ -4575,7 +4232,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "output",
         help=(
-            "Output base path. Writes .geojson, .png, .pdf, LiDAR diagnostic PNGs, "
+            "Output base path. Writes .geojson, .png, .pdf, LiDAR raster PNGs, "
             "and -terrain-report.json."
         ),
     )
@@ -4583,7 +4240,9 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--theme", default="maastotietokanta_kaikki")
     build.add_argument("--work-dir")
     build.add_argument(
+        "--reuse-downloads",
         "--use-existing-downloads",
+        dest="use_existing_downloads",
         action="store_true",
         help="Use files already present in the work/download directory instead of contacting MML.",
     )

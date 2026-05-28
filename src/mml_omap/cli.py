@@ -1,4 +1,4 @@
-﻿"""Command line interface for exporting MML open data to GeoJSON.
+"""Command line interface for exporting MML open data to GeoJSON.
 
 The primary output is GeoJSON in EPSG:3067 coordinates. When the default mapping
 is enabled, features also get `symbol` and `object_type` properties.
@@ -29,6 +29,25 @@ from typing import Any
 import certifi
 
 from . import __version__
+from .lidar_rasters import render_lidar_raster_pngs as render_lidar_raster_pngs_impl
+from .lidar import (
+    DEFAULT_GREEN_FIGHT_MIN_HITS,
+    DEFAULT_GREEN_FIGHT_RATIO,
+    DEFAULT_GREEN_GROUND_HEIGHT_M,
+    DEFAULT_GREEN_MAX_HEIGHT_M,
+    DEFAULT_GREEN_MIN_HITS,
+    DEFAULT_GREEN_MIN_REGION_AREA_M2,
+    DEFAULT_GREEN_SLOW_RATIO,
+    LIDAR_GROUND_CLASS,
+    LIDAR_UNCLASSIFIED_VEGETATION_CANDIDATE_CLASSES,
+    LIDAR_VEGETATION_CLASSES,
+    LIDAR_VEGETATION_EXCLUDED_CLASSES,
+    lidar_return_can_count_as_green,
+    lidar_return_can_support_vegetation,
+    lidar_return_type,
+    normalize_lidar_classification,
+)
+from .terrain import GroundModel
 from .symbols import (
     DEFAULT_STYLE,
     IOF_NUMBER_TO_RENDER_SYMBOL,
@@ -79,13 +98,19 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
             "12313": "path",
             "12314": "road",
             "12315": "small_path",
-            "12316": "small_path",
+            "12316": "small_road",
             "12317": "small_path",
         },
     },
     "rautatie": {"object_type": "line", "symbol": "railway"},
     "aita": {"object_type": "line", "symbol": "fence"},
-    "jyrkanne": {"object_type": "line", "symbol": "cliff"},
+    "jyrkanne": {
+        "object_type": "line",
+        "symbol": "cliff",
+        "kohdeluokka": {
+            "34400": "impassable_cliff",
+        },
+    },
     "virtavesikapea": {
         "object_type": "line",
         "symbol": "stream",
@@ -104,9 +129,13 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "muuavoinalue": {"object_type": "area", "symbol": "field"},
     "puisto": {"object_type": "area", "symbol": "field"},
     "urheilujavirkistysalue": {"object_type": "area", "symbol": "field"},
+    "autoliikennealue": {"object_type": "area", "symbol": "field"},
+    "lentokenttaalue": {"object_type": "area", "symbol": "field"},
+    "lentokentankiitotie": {"object_type": "area", "symbol": "field"},
     "kallioalue": {"object_type": "area", "symbol": "open_rock"},
     "rakennus": {"object_type": "area", "symbol": "building"},
-    "kivi": {"object_type": "point", "symbol": "mapped_rock"},
+    "kivi": {"object_type": "point", "symbol": "large_boulder"},
+    "kivikko": {"object_type": "area", "symbol": "boulder_field"},
     "paikannimi": {
         "object_type": "point",
         "symbol": "place_label",
@@ -122,18 +151,7 @@ DEFAULT_NORTH_LINE_SPACING_M = 300.0
 DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
 MML_LASER_MAP_SHEET_GRID_M = 3000.0
 DEFAULT_MML_JOB_ATTEMPTS = 3
-DEFAULT_GREEN_GROUND_HEIGHT_M = 0.8
-DEFAULT_GREEN_MAX_HEIGHT_M = 5.0
-DEFAULT_GREEN_SLOW_RATIO = 0.68
-DEFAULT_GREEN_FIGHT_RATIO = 1.13
-DEFAULT_GREEN_MIN_HITS = 8
-DEFAULT_GREEN_FIGHT_MIN_HITS = 24
-DEFAULT_GREEN_MIN_REGION_AREA_M2 = 200.0
-LIDAR_GROUND_CLASS = 2
-LIDAR_VEGETATION_CLASSES = {3, 4, 5}
-LIDAR_UNCLASSIFIED_VEGETATION_CANDIDATE_CLASSES = {0, 1}
-LIDAR_VEGETATION_EXCLUDED_CLASSES = {6, 7, 9, 17, 18}
-
+MML_LINE_DIAGNOSTIC_CONTOUR_TABLES = {"korkeuskayra", "korkeuskäyrä", "korkeuskayra_2m", "korkeuskäyrä_2m"}
 
 def read_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as file:
@@ -1314,10 +1332,8 @@ def stitch_segments(segments: list[tuple[list[float], list[float]]]) -> list[lis
     return [line for line in lines if len(line) >= 2]
 
 
-def contour_features_from_xyz_grid(
-    xs: list[float],
-    ys: list[float],
-    points: dict[tuple[float, float], float],
+def contour_features_from_ground_model(
+    ground_model: GroundModel,
     *,
     interval_m: float,
     min_level: float | None = None,
@@ -1329,7 +1345,10 @@ def contour_features_from_xyz_grid(
 
     if interval_m <= 0:
         raise ValueError("--interval-m must be greater than zero")
-    elevations = list(points.values())
+    xs = [float(value) for value in ground_model.xs]
+    ys = [float(value) for value in ground_model.ys]
+    z = np.asarray(ground_model.sample(xs, ys), dtype=float)
+    elevations = z[np.isfinite(z)]
     min_elevation = min_level if min_level is not None else min(elevations)
     max_elevation = max_level if max_level is not None else max(elevations)
     start = math.ceil(min_elevation / interval_m) * interval_m
@@ -1338,13 +1357,9 @@ def contour_features_from_xyz_grid(
         start += interval_m
     if end >= max_elevation:
         end -= interval_m
-    z = np.empty((len(ys), len(xs)), dtype=float)
-    for y_index, y in enumerate(ys):
-        for x_index, x in enumerate(xs):
-            try:
-                z[y_index, x_index] = points[(x, y)]
-            except KeyError as exc:
-                raise ValueError("XYZ input must be a complete regular grid for contour generation") from exc
+    spacing_m = min(grid_spacing(xs), grid_spacing(ys))
+    simplify_tolerance_m = max(0.0, min(spacing_m * 0.35, interval_m * 0.08))
+    min_closed_contour_area_m2 = 10.0
     generator = contourpy.contour_generator(
         x=np.asarray(xs, dtype=float),
         y=np.asarray(ys, dtype=float),
@@ -1359,27 +1374,83 @@ def contour_features_from_xyz_grid(
         render_symbol, iof_number, iof_name = contour_symbol_for_level_index(level_index, index_contour_every)
         for contour_line in generator.lines(level):
             line = [[float(point[0]), float(point[1])] for point in contour_line]
-            if len(line) < 2:
-                continue
-            features.append(
-                {
-                    "type": "Feature",
-                    "properties": {
-                        "source": "LiDAR-derived elevation grid",
-                        "source_table": "lidar_xyz_grid",
-                        "object_type": "line",
-                        "symbol": iof_number,
-                        "iof_symbol_number": iof_number,
-                        "iof_symbol_name": iof_name,
-                        "render_symbol": render_symbol,
-                        "korkeusarvo": int(round(level * 1000)),
-                    },
-                    "geometry": {"type": "LineString", "coordinates": line},
-                }
-            )
+            for clean_line in clean_contour_lines(
+                line,
+                simplify_tolerance_m=simplify_tolerance_m,
+                min_closed_area_m2=min_closed_contour_area_m2,
+            ):
+                if len(clean_line) < 2:
+                    continue
+                features.append(
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "source": "LiDAR-derived elevation grid",
+                            "source_table": "lidar_xyz_grid",
+                            "object_type": "line",
+                            "symbol": iof_number,
+                            "iof_symbol_number": iof_number,
+                            "iof_symbol_name": iof_name,
+                            "render_symbol": render_symbol,
+                            "korkeusarvo": int(round(level * 1000)),
+                        },
+                        "geometry": {"type": "LineString", "coordinates": clean_line},
+                    }
+                )
         level += interval_m
         level_index += 1
     return features
+
+
+def clean_contour_lines(
+    line: list[list[float]],
+    *,
+    simplify_tolerance_m: float,
+    min_closed_area_m2: float = 0.0,
+) -> list[list[list[float]]]:
+    if len(line) < 2:
+        return []
+    try:
+        from shapely.geometry import LineString, Polygon
+        from shapely.ops import linemerge, unary_union
+    except ImportError:
+        return [line]
+
+    def line_parts(geometry: Any) -> list[Any]:
+        if geometry.is_empty:
+            return []
+        if geometry.geom_type == "LineString":
+            return [geometry]
+        if geometry.geom_type == "MultiLineString":
+            return list(geometry.geoms)
+        if geometry.geom_type == "GeometryCollection":
+            parts = []
+            for item in geometry.geoms:
+                parts.extend(line_parts(item))
+            return parts
+        return []
+
+    geometry = LineString(line)
+    if geometry.is_empty:
+        return []
+    if simplify_tolerance_m > 0:
+        geometry = geometry.simplify(simplify_tolerance_m, preserve_topology=True)
+    cleaned = []
+    for part in line_parts(geometry):
+        candidates = [part]
+        if not part.is_simple:
+            candidates = line_parts(linemerge(unary_union(part)))
+        for candidate in candidates:
+            if candidate.is_empty or not candidate.is_simple:
+                continue
+            if simplify_tolerance_m > 0 and candidate.length < simplify_tolerance_m:
+                continue
+            if min_closed_area_m2 > 0 and candidate.is_ring and Polygon(candidate).area < min_closed_area_m2:
+                continue
+            coords = [[float(x), float(y)] for x, y in candidate.coords]
+            if len(coords) >= 2:
+                cleaned.append(coords)
+    return cleaned
 
 
 def contour_symbol_for_level_index(level_index: int, index_contour_every: int) -> tuple[str, str, str]:
@@ -1417,40 +1488,24 @@ def grid_corner_segments(
     return segments
 
 
-def slope_degrees_from_xyz_grid(
-    xs: list[float],
-    ys: list[float],
-    points: dict[tuple[float, float], float],
-) -> dict[tuple[float, float], float]:
-    dx = grid_spacing(xs)
-    dy = grid_spacing(ys)
-    slopes: dict[tuple[float, float], float] = {}
-    for x_index, x in enumerate(xs):
-        for y_index, y in enumerate(ys):
-            left = xs[max(x_index - 1, 0)]
-            right = xs[min(x_index + 1, len(xs) - 1)]
-            down = ys[max(y_index - 1, 0)]
-            up = ys[min(y_index + 1, len(ys) - 1)]
-            required = [(left, y), (right, y), (x, down), (x, up)]
-            if any(point not in points for point in required):
-                continue
-            local_dx = right - left if right != left else dx
-            local_dy = up - down if up != down else dy
-            dz_dx = (points[(right, y)] - points[(left, y)]) / local_dx
-            dz_dy = (points[(x, up)] - points[(x, down)]) / local_dy
-            slopes[(x, y)] = math.degrees(math.atan(math.hypot(dz_dx, dz_dy)))
-    return slopes
-
-
-def cliff_features_from_xyz_grid(
-    xs: list[float],
-    ys: list[float],
-    points: dict[tuple[float, float], float],
+def cliff_features_from_ground_model(
+    ground_model: GroundModel,
     *,
     slope_threshold_deg: float,
     min_length_m: float,
 ) -> list[dict[str, Any]]:
-    slopes = slope_degrees_from_xyz_grid(xs, ys, points)
+    import numpy as np
+
+    xs = [float(value) for value in ground_model.xs]
+    ys = [float(value) for value in ground_model.ys]
+    x_grid, y_grid = np.meshgrid(np.asarray(xs, dtype=float), np.asarray(ys, dtype=float))
+    dz_dx, dz_dy = ground_model.gradient(x_grid, y_grid)
+    slope_grid = np.degrees(np.arctan(np.hypot(dz_dx, dz_dy)))
+    slopes = {
+        (xs[column], ys[row]): float(slope_grid[row, column])
+        for row in range(len(ys))
+        for column in range(len(xs))
+    }
     lines = stitch_segments(grid_corner_segments(xs, ys, slopes, level=slope_threshold_deg))
     features = []
     for line in lines:
@@ -1605,26 +1660,34 @@ def ground_grid_from_lidar_points(
     sorted_cells = flat_cells[order]
     sorted_z = ground[:, 2][order]
     unique_cells, first_indexes, counts = np.unique(sorted_cells, return_index=True, return_counts=True)
-    cell_estimates = np.empty(len(unique_cells), dtype=float)
-    cell_noise_values = np.empty(len(unique_cells), dtype=float)
-    residual_chunks: list[Any] = []
-    progress(f"Aggregating {len(unique_cells)} observed ground grid cells...")
-    for index, (start, count) in enumerate(zip(first_indexes, counts)):
+    cell_rows = (unique_cells // columns).astype(int)
+    cell_columns = (unique_cells % columns).astype(int)
+    cell_estimates = sorted_z[first_indexes].astype(float, copy=True)
+    residuals = np.zeros(len(sorted_z), dtype=float)
+    multi_mask = counts > 1
+    multi_indexes = np.flatnonzero(multi_mask)
+    progress(
+        f"Aggregating {len(unique_cells)} observed ground grid cells "
+        f"({len(multi_indexes)} with multiple returns)..."
+    )
+    for index in multi_indexes:
+        start = int(first_indexes[index])
+        count = int(counts[index])
         sample = sorted_z[start : start + count]
         estimate = float(np.quantile(sample, ground_quantile))
         cell_estimates[index] = estimate
-        residual = np.abs(sample - estimate)
-        residual_chunks.append(residual)
-    residuals = np.concatenate(residual_chunks) if residual_chunks else np.asarray([], dtype=float)
+        residuals[start : start + count] = np.abs(sample - estimate)
     global_noise_m = robust_noise_m(residuals, default=0.15)
-    for index, (cell, start, count) in enumerate(zip(unique_cells, first_indexes, counts)):
-        sample = sorted_z[start : start + count]
-        row = int(cell // columns)
-        column = int(cell % columns)
-        grid[row, column] = cell_estimates[index]
-        cell_noise_m = robust_noise_m(np.abs(sample - cell_estimates[index]), default=global_noise_m)
-        cell_noise_values[index] = cell_noise_m
-        confidence[row, column] = int(count) / max(cell_noise_m, 0.05) ** 2
+    cell_noise_values = np.full(len(unique_cells), global_noise_m, dtype=float)
+    for index in multi_indexes:
+        start = int(first_indexes[index])
+        count = int(counts[index])
+        cell_noise_values[index] = robust_noise_m(
+            residuals[start : start + count],
+            default=global_noise_m,
+        )
+    grid[cell_rows, cell_columns] = cell_estimates
+    confidence[cell_rows, cell_columns] = counts / np.maximum(cell_noise_values, 0.05) ** 2
 
     known_row, known_column = np.where(~np.isnan(grid))
     known_xy = np.column_stack((known_column.astype(float), known_row.astype(float))) * cell_size_m
@@ -1679,11 +1742,7 @@ def ground_grid_from_lidar_points(
         weights = gaussian_filter(confidence, sigma=sigma_cells, mode="nearest")
         grid = weighted / np.maximum(weights, 1e-12)
 
-    points = {
-        (xs[column], ys[row]): float(grid[row, column])
-        for row in range(rows_count)
-        for column in range(columns)
-    }
+    ground_model = GroundModel(xs, ys, grid)
     report = {
         "model": "weighted Gaussian-smoothed regular grid from classified ground points",
         "observation_model": "elevation_observation(x,y) = mu(x,y) + epsilon",
@@ -1710,7 +1769,7 @@ def ground_grid_from_lidar_points(
         f"median cell noise {report['median_cell_noise_estimate_m']:.3f} m, "
         f"p95 fill distance {report['interpolated_cell_distance_p95_m']:.1f} m."
     )
-    return xs, ys, points, report
+    return xs, ys, ground_model, report
 
 
 def nearest_ground_cells(
@@ -1774,6 +1833,7 @@ def lidar_vegetation_features(
 ) -> list[dict[str, Any]]:
     if cell_size_m <= 0:
         raise ValueError("--cell-size-m must be greater than zero")
+    progress(f"Indexing {len(rows)} LiDAR returns for vegetation extraction...")
     min_x = min(row[0] for row in rows)
     min_y = min(row[1] for row in rows)
     ground: dict[tuple[int, int], float] = {}
@@ -1788,6 +1848,7 @@ def lidar_vegetation_features(
                 ground[cell] = z
     if not ground:
         raise ValueError("Vegetation extraction requires ground-classified points")
+    progress(f"Classifying vegetation candidates across {len(ground)} ground-height cells...")
     for x, y, z, classification in rows:
         normalized_classification = normalize_lidar_classification(classification)
         if not lidar_return_can_support_vegetation(normalized_classification):
@@ -1822,6 +1883,7 @@ def lidar_vegetation_features(
     for symbol, cells in cells_by_symbol.items():
         if not cells:
             continue
+        progress(f"Dissolving {len(cells)} vegetation cells for ISOM {symbol}...")
         cells = continuous_region_cells(cells, min_area_m2=DEFAULT_GREEN_MIN_REGION_AREA_M2)
         if not cells:
             continue
@@ -1857,26 +1919,6 @@ def lidar_vegetation_features(
                 }
             )
     return features
-
-
-def normalize_lidar_classification(classification: int | None) -> int | None:
-    if classification is None:
-        return None
-    return int(classification) & 31
-
-
-def lidar_return_can_support_vegetation(classification: int | None) -> bool:
-    if classification in LIDAR_VEGETATION_EXCLUDED_CLASSES:
-        return False
-    return classification == LIDAR_GROUND_CLASS or lidar_return_can_count_as_green(classification)
-
-
-def lidar_return_can_count_as_green(classification: int | None) -> bool:
-    if classification in LIDAR_VEGETATION_CLASSES:
-        return True
-    if classification is None:
-        return True
-    return classification in LIDAR_UNCLASSIFIED_VEGETATION_CANDIDATE_CLASSES
 
 
 def continuous_region_cells(
@@ -2108,6 +2150,38 @@ def line_style_layers(style: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def style_has_cliff_tags(style: dict[str, Any]) -> bool:
+    return bool(style.get("cliff_tags"))
+
+
+def cliff_tag_segments_mm(line: list[Any], transform: RenderTransform, style: dict[str, Any]) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    if len(line) < 2:
+        return []
+    spacing = max(float(style.get("cliff_tag_spacing_mm", 1.2)), 0.1)
+    tag_length = max(float(style.get("cliff_tag_length_mm", 0.8)), 0.1)
+    points = [transform.to_mm(coordinate) for coordinate in line]
+    output = []
+    distance_to_next = spacing * 0.5
+    for start, end in zip(points, points[1:]):
+        segment_dx = end[0] - start[0]
+        segment_dy = end[1] - start[1]
+        segment_length = math.hypot(segment_dx, segment_dy)
+        if segment_length <= 0:
+            continue
+        right_x = segment_dy / segment_length
+        right_y = -segment_dx / segment_length
+        walked = 0.0
+        while walked + distance_to_next <= segment_length:
+            walked += distance_to_next
+            t = walked / segment_length
+            base_x = start[0] + segment_dx * t
+            base_y = start[1] + segment_dy * t
+            output.append(((base_x, base_y), (base_x + right_x * tag_length, base_y + right_y * tag_length)))
+            distance_to_next = spacing
+        distance_to_next -= max(segment_length - walked, 0.0)
+    return output
+
+
 def point_radius_mm(style: dict[str, Any]) -> float:
     return float(style.get("point_radius_mm", max(float(style.get("stroke_width_mm", 0.18)) * 2.0, 0.35)))
 
@@ -2125,7 +2199,7 @@ def should_render_point_symbol(feature: dict[str, Any]) -> bool:
     object_type = properties.get("object_type")
     if object_type is not None and object_type != "point":
         return False
-    return feature_symbol(feature) in {"mapped_rock"} or object_type == "point"
+    return feature_symbol(feature) in {"mapped_rock", "large_boulder"} or object_type == "point"
 
 
 def feature_render_order(feature: dict[str, Any]) -> int:
@@ -2282,7 +2356,7 @@ def map_footer_text(transform: RenderTransform, map_maker: str, contour_interval
 def lidar_footer_text(transform: RenderTransform, map_maker: str) -> str:
     return (
         f"{transform.paper_size} | Scale 1:{transform.scale} | {map_maker} | "
-        f"mml-omap {__version__} | LiDAR diagnostics | "
+        f"mml-omap {__version__} | LiDAR rasters | "
         f"KOK {transform.magnetic_declination_deg:.2f} deg | EPSG:3067"
     )
 
@@ -2452,6 +2526,15 @@ def render_svg(
                         f'stroke-width="{layer_width:.3f}" stroke-linecap="round" '
                         f'stroke-linejoin="round"{dash_attr}/>'
                     )
+                if style_has_cliff_tags(style):
+                    tag_stroke = style.get("stroke", "#000000")
+                    tag_width = float(style.get("cliff_tag_width_mm", style.get("stroke_width_mm", 0.18)))
+                    for start, end in cliff_tag_segments_mm(part.get("coordinates") or [], transform, style):
+                        lines.append(
+                            f'<line x1="{start[0]:.3f}" y1="{start[1]:.3f}" '
+                            f'x2="{end[0]:.3f}" y2="{end[1]:.3f}" '
+                            f'stroke="{tag_stroke}" stroke-width="{tag_width:.3f}" stroke-linecap="round"/>'
+                        )
             elif part["type"] == "Point":
                 x, y = transform.to_mm(part.get("coordinates"))
                 label = feature_label_text(feature)
@@ -2483,6 +2566,328 @@ def render_svg(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     progress(f"Wrote SVG to {output_path}.")
+
+
+def mml_line_diagnostic_color_for_symbol(symbol: str | None, mapped: bool) -> tuple[int, int, int]:
+    if not mapped:
+        return (204, 0, 0)
+    metadata = iof_symbol_metadata(symbol)
+    number = str(metadata.get("iof_symbol_number") or "")
+    if number.startswith("1"):
+        return (155, 90, 40)
+    if number.startswith("3"):
+        return (0, 102, 204)
+    if number.startswith("4"):
+        return (0, 128, 0)
+    if number.startswith(("2", "5")):
+        return (0, 0, 0)
+    return (120, 120, 120)
+
+
+def is_mml_contour_table(table: str) -> bool:
+    normalized = table.lower().replace("-", "_")
+    return normalized in MML_LINE_DIAGNOSTIC_CONTOUR_TABLES or "korkeuskayra" in normalized or "korkeuskäyrä" in normalized
+
+
+def line_midpoint_coordinate(coordinates: list[list[float]]) -> list[float] | None:
+    if len(coordinates) < 2:
+        return None
+    lengths = []
+    total_length = 0.0
+    for start, end in zip(coordinates, coordinates[1:]):
+        length = math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
+        lengths.append(length)
+        total_length += length
+    if total_length <= 0.0:
+        return [float(coordinates[0][0]), float(coordinates[0][1])]
+    target = total_length * 0.5
+    walked = 0.0
+    for index, length in enumerate(lengths):
+        start = coordinates[index]
+        end = coordinates[index + 1]
+        if walked + length >= target:
+            t = 0.0 if length <= 0.0 else (target - walked) / length
+            return [
+                float(start[0]) + (float(end[0]) - float(start[0])) * t,
+                float(start[1]) + (float(end[1]) - float(start[1])) * t,
+            ]
+        walked += length
+    return [float(coordinates[-1][0]), float(coordinates[-1][1])]
+
+
+def mml_diagnostic_features_from_gpkg(
+    gpkg_path: Path,
+    *,
+    bbox: list[float],
+    clip_frame: OrientedFrame,
+    table_rules: dict[str, dict[str, Any]],
+    geometry_types: set[str],
+) -> list[dict[str, Any]]:
+    features: list[dict[str, Any]] = []
+    with sqlite3.connect(gpkg_path) as connection:
+        connection.row_factory = sqlite3.Row
+        for table, geometry_column in gpkg_feature_tables(connection):
+            if is_mml_contour_table(table):
+                continue
+            rule = table_rules.get(table)
+            for row in feature_rows(connection, table, geometry_column):
+                geometry = parse_gpkg_geometry(row[geometry_column])
+                if geometry is None or geometry["type"] not in geometry_types:
+                    continue
+                if not geometry_intersects_bbox(geometry, bbox):
+                    continue
+                geometry = clip_geometry_to_frame(geometry, clip_frame)
+                if geometry is None or geometry.get("type") not in geometry_types:
+                    continue
+                properties = row_properties(row, geometry_column)
+                object_type, symbol = classify_feature(table, properties, geometry, rule)
+                metadata = iof_symbol_metadata(symbol)
+                properties["source_table"] = table
+                properties["object_type"] = object_type or "line"
+                properties["diagnostic_symbol"] = metadata.get("iof_symbol_number")
+                properties["diagnostic_symbol_name"] = metadata.get("iof_symbol_name")
+                properties["diagnostic_mapped"] = bool(symbol and metadata.get("iof_symbol_number"))
+                properties["diagnostic_color"] = mml_line_diagnostic_color_for_symbol(
+                    symbol,
+                    bool(properties["diagnostic_mapped"]),
+                )
+                features.append({"type": "Feature", "properties": properties, "geometry": geometry})
+    return features
+
+
+def screen_delta_to_world_delta(transform: RenderTransform, screen_dx_mm: float, screen_dy_mm: float) -> tuple[float, float]:
+    scale_factor = transform.scale / 1000.0
+    map_x = screen_dx_mm * scale_factor
+    map_y = -screen_dy_mm * scale_factor
+    world_dx = transform._cos_declination * map_x + transform._sin_declination * map_y
+    world_dy = -transform._sin_declination * map_x + transform._cos_declination * map_y
+    return world_dx, world_dy
+
+
+def cliff_line_right_side_height_delta(line: list[Any], ground_model: GroundModel, transform: RenderTransform) -> float:
+    total = 0.0
+    samples = 0
+    for start, end in zip(line, line[1:]):
+        start_mm = transform.to_mm(start)
+        end_mm = transform.to_mm(end)
+        screen_dx = end_mm[0] - start_mm[0]
+        screen_dy = end_mm[1] - start_mm[1]
+        screen_length = math.hypot(screen_dx, screen_dy)
+        if screen_length <= 0:
+            continue
+        right_screen_x = screen_dy / screen_length
+        right_screen_y = -screen_dx / screen_length
+        right_world_x, right_world_y = screen_delta_to_world_delta(transform, right_screen_x, right_screen_y)
+        world_length = math.hypot(right_world_x, right_world_y)
+        if world_length <= 0:
+            continue
+        offset_x = right_world_x / world_length * 1.0
+        offset_y = right_world_y / world_length * 1.0
+        midpoint_x = (float(start[0]) + float(end[0])) * 0.5
+        midpoint_y = (float(start[1]) + float(end[1])) * 0.5
+        right_height = float(ground_model.evaluate(midpoint_x + offset_x, midpoint_y + offset_y))
+        left_height = float(ground_model.evaluate(midpoint_x - offset_x, midpoint_y - offset_y))
+        total += right_height - left_height
+        samples += 1
+    return total / max(samples, 1)
+
+
+def orient_mml_cliff_lines_downhill(geojson: dict[str, Any], ground_model: GroundModel, transform: RenderTransform) -> None:
+    for feature in geojson_features(geojson):
+        properties = feature.get("properties") or {}
+        if properties.get("source_table") != "jyrkanne":
+            continue
+        if feature_symbol(feature) not in {"impassable_cliff", "cliff"}:
+            continue
+        geometry = feature.get("geometry") or {}
+        if geometry.get("type") == "LineString":
+            line = geometry.get("coordinates") or []
+            if cliff_line_right_side_height_delta(line, ground_model, transform) > 0:
+                geometry["coordinates"] = list(reversed(line))
+        elif geometry.get("type") == "MultiLineString":
+            oriented = []
+            for line in geometry.get("coordinates") or []:
+                if cliff_line_right_side_height_delta(line, ground_model, transform) > 0:
+                    oriented.append(list(reversed(line)))
+                else:
+                    oriented.append(line)
+            geometry["coordinates"] = oriented
+
+
+def render_mml_line_diagnostic_pdf(
+    gpkg_path: Path,
+    output_path: Path,
+    *,
+    transform: RenderTransform,
+    bbox: list[float],
+    magnetic_declination_deg: float,
+    map_title_text: str | None,
+    map_maker: str,
+    north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+) -> dict[str, Any]:
+    clip_frame = OrientedFrame(bbox, magnetic_declination_deg)
+    features = mml_diagnostic_features_from_gpkg(
+        gpkg_path,
+        bbox=enclosing_grid_bbox(bbox, magnetic_declination_deg),
+        clip_frame=clip_frame,
+        table_rules=DEFAULT_TABLE_RULES,
+        geometry_types={"LineString", "MultiLineString"},
+    )
+    progress(f"Rendering MML line diagnostic PDF with {len(features)} GeoPackage line features...")
+    page_width = transform.page_width_mm * 72.0 / 25.4
+    page_height = transform.page_height_mm * 72.0 / 25.4
+    commands = ["1 1 1 rg", f"0 0 {page_width:.3f} {page_height:.3f} re", "f"]
+    rendered_parts = 0
+    for feature in features:
+        properties = feature.get("properties") or {}
+        color = tuple(properties.get("diagnostic_color") or (204, 0, 0))
+        kohdeluokka = str(properties.get("kohdeluokka", ""))
+        commands.append(pdf_color_operator(color, stroke=True))
+        commands.append(f"{0.18 * 72.0 / 25.4:.3f} w")
+        commands.append("[] 0 d")
+        for part in iter_geometry_parts(feature.get("geometry") or {}):
+            if part["type"] != "LineString":
+                continue
+            coordinates = part.get("coordinates") or []
+            if len(coordinates) < 2:
+                continue
+            x, y = pdf_point(transform, coordinates[0])
+            commands.append(f"{x:.3f} {y:.3f} m")
+            for coordinate in coordinates[1:]:
+                x, y = pdf_point(transform, coordinate)
+                commands.append(f"{x:.3f} {y:.3f} l")
+            commands.append("S")
+            midpoint = line_midpoint_coordinate(coordinates)
+            if midpoint is not None and kohdeluokka:
+                x, y = transform.to_mm(midpoint)
+                append_pdf_text(commands, x + 0.9, y - 0.9, 6.0, kohdeluokka, transform)
+            rendered_parts += 1
+    commands.append(pdf_color_operator((221, 221, 221), stroke=True))
+    commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
+    for x in north_line_x_positions(transform, north_line_spacing_m):
+        x0, y0 = pdf_mm(x, transform.map_top_mm, transform)
+        x1, y1 = pdf_mm(x, transform.map_top_mm + transform.map_height_mm, transform)
+        commands.append(f"{x0:.3f} {y0:.3f} m")
+        commands.append(f"{x1:.3f} {y1:.3f} l")
+        commands.append("S")
+    commands.append("0 0 0 RG")
+    commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
+    x, y = pdf_mm(transform.map_left_mm, transform.map_top_mm + transform.map_height_mm, transform)
+    commands.append(
+        f"{x:.3f} {y:.3f} {transform.map_width_mm * 72.0 / 25.4:.3f} "
+        f"{transform.map_height_mm * 72.0 / 25.4:.3f} re"
+    )
+    commands.append("S")
+    commands.append("0 0 0 rg")
+    append_pdf_text(commands, transform.map_left_mm, max(transform.map_top_mm - 1.2, 3.0), 9.0, f"{map_title(output_path, map_title_text)} MML line diagnostic", transform)
+    append_pdf_text(commands, transform.map_left_mm, transform.page_height_mm - 1.5, 7.5, f"mml-omap {__version__} | MML GeoPackage line objects | {map_maker}", transform)
+    append_pdf_text(commands, transform.map_left_mm, transform.map_top_mm + transform.map_height_mm + 3.2, 6.8, "mapped: black/brown/green/gray/blue | unmapped: red | labels: kohdeluokka", transform)
+    write_pdf_page(output_path, page_width, page_height, commands)
+    progress(f"Wrote MML line diagnostic PDF to {output_path}.")
+    return {
+        "path": str(output_path),
+        "format": "pdf",
+        "feature_count": len(features),
+        "line_part_count": rendered_parts,
+        "label": "kohdeluokka",
+        "colors": {
+            "unmapped": "#cc0000",
+            "black": "#000000",
+            "brown": "#9b5a28",
+            "green": "#008000",
+            "gray": "#787878",
+            "blue": "#0066cc",
+        },
+    }
+
+
+def polygon_label_coordinate(part: dict[str, Any]) -> list[float] | None:
+    coordinates = part.get("coordinates") or []
+    if not coordinates or not coordinates[0]:
+        return None
+    xs = [float(point[0]) for point in coordinates[0]]
+    ys = [float(point[1]) for point in coordinates[0]]
+    return [(min(xs) + max(xs)) * 0.5, (min(ys) + max(ys)) * 0.5]
+
+
+def render_mml_area_diagnostic_pdf(
+    gpkg_path: Path,
+    output_path: Path,
+    *,
+    transform: RenderTransform,
+    bbox: list[float],
+    magnetic_declination_deg: float,
+    map_title_text: str | None,
+    map_maker: str,
+    north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+) -> dict[str, Any]:
+    clip_frame = OrientedFrame(bbox, magnetic_declination_deg)
+    features = mml_diagnostic_features_from_gpkg(
+        gpkg_path,
+        bbox=enclosing_grid_bbox(bbox, magnetic_declination_deg),
+        clip_frame=clip_frame,
+        table_rules=DEFAULT_TABLE_RULES,
+        geometry_types={"Polygon", "MultiPolygon"},
+    )
+    progress(f"Rendering MML area diagnostic PDF with {len(features)} GeoPackage area features...")
+    page_width = transform.page_width_mm * 72.0 / 25.4
+    page_height = transform.page_height_mm * 72.0 / 25.4
+    commands = ["1 1 1 rg", f"0 0 {page_width:.3f} {page_height:.3f} re", "f"]
+    rendered_parts = 0
+    for feature in features:
+        properties = feature.get("properties") or {}
+        color = tuple(properties.get("diagnostic_color") or (204, 0, 0))
+        kohdeluokka = str(properties.get("kohdeluokka", ""))
+        commands.append(pdf_color_operator(color, stroke=True))
+        commands.append(f"{0.18 * 72.0 / 25.4:.3f} w")
+        commands.append("[] 0 d")
+        for part in iter_geometry_parts(feature.get("geometry") or {}):
+            if part["type"] != "Polygon":
+                continue
+            append_pdf_polygon_path(commands, part, transform)
+            commands.append("S")
+            label_coordinate = polygon_label_coordinate(part)
+            if label_coordinate is not None and kohdeluokka:
+                x, y = transform.to_mm(label_coordinate)
+                append_pdf_text(commands, x + 0.9, y - 0.9, 6.0, kohdeluokka, transform)
+            rendered_parts += 1
+    commands.append(pdf_color_operator((221, 221, 221), stroke=True))
+    commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
+    for x in north_line_x_positions(transform, north_line_spacing_m):
+        x0, y0 = pdf_mm(x, transform.map_top_mm, transform)
+        x1, y1 = pdf_mm(x, transform.map_top_mm + transform.map_height_mm, transform)
+        commands.append(f"{x0:.3f} {y0:.3f} m")
+        commands.append(f"{x1:.3f} {y1:.3f} l")
+        commands.append("S")
+    commands.append("0 0 0 RG")
+    commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
+    x, y = pdf_mm(transform.map_left_mm, transform.map_top_mm + transform.map_height_mm, transform)
+    commands.append(
+        f"{x:.3f} {y:.3f} {transform.map_width_mm * 72.0 / 25.4:.3f} "
+        f"{transform.map_height_mm * 72.0 / 25.4:.3f} re"
+    )
+    commands.append("S")
+    commands.append("0 0 0 rg")
+    append_pdf_text(commands, transform.map_left_mm, max(transform.map_top_mm - 1.2, 3.0), 9.0, f"{map_title(output_path, map_title_text)} MML area diagnostic", transform)
+    append_pdf_text(commands, transform.map_left_mm, transform.page_height_mm - 1.5, 7.5, f"mml-omap {__version__} | MML GeoPackage area objects | {map_maker}", transform)
+    append_pdf_text(commands, transform.map_left_mm, transform.map_top_mm + transform.map_height_mm + 3.2, 6.8, "mapped: black/brown/green/gray/blue | unmapped: red | labels: kohdeluokka", transform)
+    write_pdf_page(output_path, page_width, page_height, commands)
+    progress(f"Wrote MML area diagnostic PDF to {output_path}.")
+    return {
+        "path": str(output_path),
+        "format": "pdf",
+        "feature_count": len(features),
+        "area_part_count": rendered_parts,
+        "label": "kohdeluokka",
+        "colors": {
+            "unmapped": "#cc0000",
+            "black": "#000000",
+            "brown": "#9b5a28",
+            "green": "#008000",
+            "gray": "#787878",
+            "blue": "#0066cc",
+        },
+    }
 
 
 def color_to_rgb(raw: str) -> tuple[int, int, int] | None:
@@ -2743,272 +3148,13 @@ def viridis_rgb_array(values: Any) -> Any:
     return np.rint(anchors[lower] + (anchors[upper] - anchors[lower]) * t).astype(np.uint8)
 
 
-def render_lidar_height_png(
-    rows: list[tuple[float, float, float, int | None]],
-    output_path: Path,
-    *,
-    transform: RenderTransform,
-    dpi: int,
-    map_title_text: str | None = None,
-    map_maker: str = "mml-omap",
-) -> dict[str, Any]:
-    try:
-        import numpy as np
-    except ImportError as exc:
-        raise RuntimeError("LiDAR point height PNG rendering requires numpy") from exc
-
-    px_per_mm = dpi / 25.4
-    width = max(1, int(round(transform.page_width_mm * px_per_mm)))
-    height = max(1, int(round(transform.page_height_mm * px_per_mm)))
-    plot_left = int(round(transform.map_left_mm * px_per_mm))
-    plot_top = int(round(transform.map_top_mm * px_per_mm))
-    plot_width = max(1, int(round(transform.map_width_mm * px_per_mm)))
-    plot_height = max(1, int(round(transform.map_height_mm * px_per_mm)))
-    plot_right = plot_left + plot_width
-    plot_bottom = plot_top + plot_height
-    image = np.full((height, width, 4), 255, dtype=np.uint8)
-
-    raw = np.asarray(rows, dtype=float)
-    if raw.ndim != 2 or raw.shape[1] < 3:
-        raise ValueError("Point rows must contain x, y, z")
-    mask = (
-        np.isfinite(raw[:, 0])
-        & np.isfinite(raw[:, 1])
-        & np.isfinite(raw[:, 2])
+def render_lidar_raster_pngs(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    return render_lidar_raster_pngs_impl(
+        source_data,
+        output_base,
+        args,
+        lidar_raster_transform(source_data, args),
     )
-    finite_points = raw[mask]
-    points: list[tuple[float, float, float]] = []
-    for x_raw, y_raw, z_raw, *_rest in finite_points:
-        x_mm, y_mm = transform.to_mm([x_raw, y_raw])
-        x_px = int(round(x_mm * px_per_mm))
-        y_px = int(round(y_mm * px_per_mm))
-        if plot_left <= x_px <= plot_right and plot_top <= y_px <= plot_bottom:
-            points.append((float(x_px), float(y_px), float(z_raw)))
-    point_array = np.asarray(points, dtype=float)
-    if len(point_array):
-        z = point_array[:, 2]
-        z_min = float(np.quantile(z, 0.01))
-        z_max = float(np.quantile(z, 0.99))
-        if z_max <= z_min:
-            z_min = float(np.min(z))
-            z_max = float(np.max(z))
-        if z_max <= z_min:
-            z_max = z_min + 1.0
-        normalized = (z - z_min) / (z_max - z_min)
-        colors = viridis_rgb_array(normalized)
-        x = np.clip(np.rint(point_array[:, 0]).astype(int), 0, width - 1)
-        y = np.clip(np.rint(point_array[:, 1]).astype(int), 0, height - 1)
-        image[y, x, 0:3] = colors
-        image[y, x, 3] = 255
-    else:
-        z_min = 0.0
-        z_max = 0.0
-
-    image[plot_top, plot_left:plot_right, 0:3] = 0
-    image[plot_bottom - 1, plot_left:plot_right, 0:3] = 0
-    image[plot_top:plot_bottom, plot_left, 0:3] = 0
-    image[plot_top:plot_bottom, plot_right - 1, 0:3] = 0
-
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        pixels = bytearray(image.reshape(height * width * 4).tobytes())
-        write_png(output_path, width, height, pixels)
-    else:
-        pil_image = Image.fromarray(image, mode="RGBA")
-        draw = ImageDraw.Draw(pil_image)
-        title_font = pillow_layout_font(max(12, int(round(3.2 * px_per_mm))))
-        footer_font = pillow_layout_font(max(10, int(round(2.6 * px_per_mm))))
-        title = f"{map_title(output_path, map_title_text)} LiDAR point heights"
-        footer = lidar_footer_text(transform, map_maker)
-        legend = f"Height colors: {z_min:.1f} m to {z_max:.1f} m (1st-99th percentile, clamped) | {int(len(point_array))} points"
-        text_x = max(2, plot_left)
-        draw_pillow_text_fit(draw, (text_x, max(2, plot_top - int(round(4.0 * px_per_mm)))), title, fill=(0, 0, 0, 255), font=title_font, max_width_px=width - text_x - 2)
-        draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(5.0 * px_per_mm)))), footer, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
-        draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(2.8 * px_per_mm)))), legend, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
-        available_right = width - plot_right
-        bar_width = max(8, int(round(2.5 * px_per_mm)))
-        bar_height = min(plot_height, max(24, int(round(35.0 * px_per_mm))))
-        if available_right >= bar_width + int(round(7.0 * px_per_mm)):
-            bar_x0 = plot_right + int(round(2.5 * px_per_mm))
-            bar_y0 = plot_top
-            label_x = bar_x0 + bar_width + int(round(1.4 * px_per_mm))
-        else:
-            bar_x0 = min(width - bar_width - 2, max(2, plot_right - bar_width - int(round(2.0 * px_per_mm))))
-            bar_y0 = plot_top + int(round(2.0 * px_per_mm))
-            label_x = max(2, bar_x0 - int(round(12.0 * px_per_mm)))
-        for offset in range(bar_height):
-            value = 1.0 - offset / max(bar_height - 1, 1)
-            color = tuple(int(channel) for channel in viridis_rgb_array(np.asarray([value], dtype=float))[0])
-            draw.line([(bar_x0, bar_y0 + offset), (bar_x0 + bar_width, bar_y0 + offset)], fill=(*color, 255))
-        draw.rectangle((bar_x0, bar_y0, bar_x0 + bar_width, bar_y0 + bar_height - 1), outline=(0, 0, 0, 255))
-        draw.text((label_x, bar_y0), f"{z_max:.1f} m", fill=(0, 0, 0, 255), font=footer_font)
-        draw.text((label_x, bar_y0 + bar_height - max(10, int(round(2.6 * px_per_mm)))), f"{z_min:.1f} m", fill=(0, 0, 0, 255), font=footer_font)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        pil_image.save(output_path)
-    report = {
-        "path": str(output_path),
-        "bbox": [transform.min_x, transform.min_y, transform.max_x, transform.max_y],
-        "paper_size": transform.paper_size,
-        "scale": transform.scale,
-        "width_px": width,
-        "height_px": height,
-        "plot_width_px": plot_width,
-        "plot_height_px": plot_height,
-        "plot_left_px": plot_left,
-        "plot_top_px": plot_top,
-        "dpi": dpi,
-        "pixels_per_m": 1000.0 * px_per_mm / transform.scale,
-        "point_count": int(len(point_array)),
-        "height_color_ramp": "viridis",
-        "height_color_min_m": z_min,
-        "height_color_max_m": z_max,
-        "height_color_range": "1st to 99th percentile, clamped",
-        "software": "mml-omap",
-        "software_version": __version__,
-    }
-    progress(
-        "Wrote LiDAR point height PNG "
-        f"to {output_path} with {len(point_array)} points colored by height."
-    )
-    return report
-
-
-def lidar_return_type(classification: int | None) -> str:
-    normalized = normalize_lidar_classification(classification)
-    if normalized == LIDAR_GROUND_CLASS:
-        return "ground"
-    if normalized == 9:
-        return "water"
-    if normalized == 3:
-        return "low_vegetation"
-    if normalized == 4:
-        return "medium_vegetation"
-    if normalized == 5:
-        return "high_vegetation"
-    if normalized == 6:
-        return "building"
-    if normalized in {7, 18}:
-        return "noise"
-    return "other"
-
-
-LIDAR_RETURN_TYPE_STYLES: dict[str, tuple[str, tuple[int, int, int]]] = {
-    "ground": ("Ground", (166, 118, 64)),
-    "water": ("Water", (0, 143, 213)),
-    "low_vegetation": ("Low vegetation", (196, 230, 126)),
-    "medium_vegetation": ("Medium vegetation", (91, 184, 76)),
-    "high_vegetation": ("High vegetation", (0, 112, 60)),
-    "building": ("Building", (60, 60, 60)),
-    "noise": ("Noise", (180, 0, 180)),
-    "other": ("Other", (150, 150, 150)),
-}
-
-
-def render_lidar_return_type_png(
-    rows: list[tuple[float, float, float, int | None]],
-    output_path: Path,
-    *,
-    transform: RenderTransform,
-    dpi: int,
-    map_title_text: str | None = None,
-    map_maker: str = "mml-omap",
-) -> dict[str, Any]:
-    try:
-        import numpy as np
-    except ImportError as exc:
-        raise RuntimeError("LiDAR return-type PNG rendering requires numpy") from exc
-
-    px_per_mm = dpi / 25.4
-    width = max(1, int(round(transform.page_width_mm * px_per_mm)))
-    height = max(1, int(round(transform.page_height_mm * px_per_mm)))
-    plot_left = int(round(transform.map_left_mm * px_per_mm))
-    plot_top = int(round(transform.map_top_mm * px_per_mm))
-    plot_width = max(1, int(round(transform.map_width_mm * px_per_mm)))
-    plot_height = max(1, int(round(transform.map_height_mm * px_per_mm)))
-    plot_right = plot_left + plot_width
-    plot_bottom = plot_top + plot_height
-    image = np.full((height, width, 4), 255, dtype=np.uint8)
-    counts = {key: 0 for key in LIDAR_RETURN_TYPE_STYLES}
-
-    point_count = 0
-    for x_raw, y_raw, _z_raw, classification in rows:
-        if not math.isfinite(x_raw) or not math.isfinite(y_raw):
-            continue
-        x_mm, y_mm = transform.to_mm([x_raw, y_raw])
-        x_px = int(round(x_mm * px_per_mm))
-        y_px = int(round(y_mm * px_per_mm))
-        if not (plot_left <= x_px <= plot_right and plot_top <= y_px <= plot_bottom):
-            continue
-        return_type = lidar_return_type(classification)
-        _label, color = LIDAR_RETURN_TYPE_STYLES[return_type]
-        image[min(max(y_px, 0), height - 1), min(max(x_px, 0), width - 1), 0:3] = color
-        image[min(max(y_px, 0), height - 1), min(max(x_px, 0), width - 1), 3] = 255
-        counts[return_type] += 1
-        point_count += 1
-
-    image[plot_top, plot_left:plot_right, 0:3] = 0
-    image[plot_bottom - 1, plot_left:plot_right, 0:3] = 0
-    image[plot_top:plot_bottom, plot_left, 0:3] = 0
-    image[plot_top:plot_bottom, plot_right - 1, 0:3] = 0
-
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        pixels = bytearray(image.reshape(height * width * 4).tobytes())
-        write_png(output_path, width, height, pixels)
-    else:
-        pil_image = Image.fromarray(image, mode="RGBA")
-        draw = ImageDraw.Draw(pil_image)
-        title_font = pillow_layout_font(max(12, int(round(3.2 * px_per_mm))))
-        footer_font = pillow_layout_font(max(10, int(round(2.6 * px_per_mm))))
-        title = f"{map_title(output_path, map_title_text)} LiDAR return types"
-        footer = lidar_footer_text(transform, map_maker)
-        text_x = max(2, plot_left)
-        draw_pillow_text_fit(draw, (text_x, max(2, plot_top - int(round(4.0 * px_per_mm)))), title, fill=(0, 0, 0, 255), font=title_font, max_width_px=width - text_x - 2)
-        draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(4.2 * px_per_mm)))), footer, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
-        legend_x = plot_right + int(round(2.5 * px_per_mm))
-        if legend_x > width - int(round(35.0 * px_per_mm)):
-            legend_x = max(2, plot_left + int(round(1.5 * px_per_mm)))
-        legend_y = plot_top + int(round(2.0 * px_per_mm))
-        swatch = max(8, int(round(2.5 * px_per_mm)))
-        line_gap = max(12, int(round(4.0 * px_per_mm)))
-        for index, (key, (label, color)) in enumerate(LIDAR_RETURN_TYPE_STYLES.items()):
-            y = legend_y + index * line_gap
-            if y + swatch >= height:
-                break
-            draw.rectangle((legend_x, y, legend_x + swatch, y + swatch), fill=(*color, 255), outline=(0, 0, 0, 255))
-            draw.text((legend_x + swatch + 5, y), f"{label}: {counts[key]}", fill=(0, 0, 0, 255), font=footer_font)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        pil_image.save(output_path)
-
-    report = {
-        "path": str(output_path),
-        "bbox": [transform.min_x, transform.min_y, transform.max_x, transform.max_y],
-        "paper_size": transform.paper_size,
-        "scale": transform.scale,
-        "width_px": width,
-        "height_px": height,
-        "plot_width_px": plot_width,
-        "plot_height_px": plot_height,
-        "plot_left_px": plot_left,
-        "plot_top_px": plot_top,
-        "dpi": dpi,
-        "pixels_per_m": 1000.0 * px_per_mm / transform.scale,
-        "point_count": point_count,
-        "return_type_counts": counts,
-        "return_type_colors": {
-            key: {"label": label, "rgb": color}
-            for key, (label, color) in LIDAR_RETURN_TYPE_STYLES.items()
-        },
-        "software": "mml-omap",
-        "software_version": __version__,
-    }
-    progress(
-        "Wrote LiDAR return-type PNG "
-        f"to {output_path} with {point_count} points colored by LAS class group."
-    )
-    return report
 
 
 def render_png_with_pillow(
@@ -3098,6 +3244,15 @@ def render_png_with_pillow(
                     dash_pattern = dash_pattern_px(layer.get("dasharray"), px_per_mm)
                     for start, end in dashed_polyline_segments(points, dash_pattern):
                         draw.line([start, end], fill=layer_stroke, width=layer_px)
+                if style_has_cliff_tags(style):
+                    tag_stroke = color_to_rgb(str(style.get("stroke", "#000000"))) or (0, 0, 0)
+                    tag_width = max(1, int(round(float(style.get("cliff_tag_width_mm", style.get("stroke_width_mm", 0.18))) * px_per_mm)))
+                    for start, end in cliff_tag_segments_mm(part.get("coordinates") or [], transform, style):
+                        draw.line(
+                            [(start[0] * px_per_mm, start[1] * px_per_mm), (end[0] * px_per_mm, end[1] * px_per_mm)],
+                            fill=tag_stroke,
+                            width=tag_width,
+                        )
             elif part["type"] == "Point":
                 if feature_label_text(feature):
                     continue
@@ -3232,6 +3387,19 @@ def render_png(
                         layer.get("dasharray"),
                         px_per_mm,
                     )
+                if style_has_cliff_tags(style):
+                    tag_stroke = color_to_rgb(str(style.get("stroke", "#000000"))) or (0, 0, 0)
+                    tag_width = max(1, int(round(float(style.get("cliff_tag_width_mm", style.get("stroke_width_mm", 0.18))) * px_per_mm)))
+                    for start, end in cliff_tag_segments_mm(part.get("coordinates") or [], transform, style):
+                        draw_line(
+                            canvas,
+                            width,
+                            height,
+                            (int(round(start[0] * px_per_mm)), int(round(start[1] * px_per_mm))),
+                            (int(round(end[0] * px_per_mm)), int(round(end[1] * px_per_mm))),
+                            tag_stroke,
+                            tag_width,
+                        )
             elif part["type"] == "Point":
                 if feature_label_text(feature):
                     continue
@@ -3474,6 +3642,41 @@ def append_pdf_layout(
     append_pdf_text(commands, transform.map_left_mm + transform.map_width_mm - 4.0, max(transform.map_top_mm - 1.0, 4.5), 9.0, "N", transform)
 
 
+def write_pdf_page(output_path: Path, page_width: float, page_height: float, commands: list[str]) -> None:
+    content = ("\n".join(commands) + "\n").encode("latin-1", "replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.3f} {page_height:.3f}] "
+            f"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+            f"/Encoding /WinAnsiEncoding >> >> >> "
+            f"/Contents 4 0 R >>"
+        ).encode("ascii"),
+        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"endstream",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output.extend(f"{index} 0 obj\n".encode("ascii"))
+        output.extend(obj)
+        output.extend(b"\nendobj\n")
+    xref_offset = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    output.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(bytes(output))
+
+
 def render_pdf(
     geojson: dict[str, Any],
     output_path: Path,
@@ -3531,6 +3734,18 @@ def render_pdf(
                         x, y = pdf_point(transform, coordinate)
                         commands.append(f"{x:.3f} {y:.3f} l")
                     commands.append("S")
+                if style_has_cliff_tags(style):
+                    tag_stroke = color_to_rgb(str(style.get("stroke", "#000000"))) or (0, 0, 0)
+                    tag_width = float(style.get("cliff_tag_width_mm", style.get("stroke_width_mm", 0.18))) * 72.0 / 25.4
+                    commands.append(pdf_color_operator(tag_stroke, stroke=True))
+                    commands.append(f"{tag_width:.3f} w")
+                    commands.append("[] 0 d")
+                    for start, end in cliff_tag_segments_mm(line, transform, style):
+                        x0, y0 = pdf_mm(start[0], start[1], transform)
+                        x1, y1 = pdf_mm(end[0], end[1], transform)
+                        commands.append(f"{x0:.3f} {y0:.3f} m")
+                        commands.append(f"{x1:.3f} {y1:.3f} l")
+                        commands.append("S")
             elif part["type"] == "Point":
                 if append_pdf_label(commands, feature, part, style, transform):
                     continue
@@ -3554,38 +3769,7 @@ def render_pdf(
         )
     if include_symbol_numbers:
         append_pdf_symbol_number_labels(commands, features, transform)
-    content = ("\n".join(commands) + "\n").encode("latin-1", "replace")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        (
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.3f} {page_height:.3f}] "
-            f"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
-            f"/Encoding /WinAnsiEncoding >> >> >> "
-            f"/Contents 4 0 R >>"
-        ).encode("ascii"),
-        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"endstream",
-    ]
-    output = bytearray(b"%PDF-1.4\n")
-    offsets = [0]
-    for index, obj in enumerate(objects, start=1):
-        offsets.append(len(output))
-        output.extend(f"{index} 0 obj\n".encode("ascii"))
-        output.extend(obj)
-        output.extend(b"\nendobj\n")
-    xref_offset = len(output)
-    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
-    output.extend(b"0000000000 65535 f \n")
-    for offset in offsets[1:]:
-        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
-    output.extend(
-        (
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-            f"startxref\n{xref_offset}\n%%EOF\n"
-        ).encode("ascii")
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(bytes(output))
+    write_pdf_page(output_path, page_width, page_height, commands)
     progress(f"Wrote PDF to {output_path}.")
 
 
@@ -3657,6 +3841,16 @@ def download_map_sheet_process_files(
     return paths
 
 
+def existing_download_paths(output_path: Path, suffixes: tuple[str, ...]) -> list[Path]:
+    sibling_stems = [output_path.with_suffix(suffix) for suffix in suffixes]
+    candidates = [output_path, *sibling_stems, *sorted(output_path.parent.glob(f"{output_path.stem}-*"))]
+    return [
+        path
+        for path in dict.fromkeys(candidates)
+        if path.is_file() and path.suffix.lower() in suffixes
+    ]
+
+
 def command_convert_gpkg(args: argparse.Namespace) -> int:
     paper_bbox = parse_orienteering_bbox(args.bbox) if args.bbox else None
     magnetic_date = parse_date(args.magnetic_date)
@@ -3693,6 +3887,70 @@ def command_convert_gpkg(args: argparse.Namespace) -> int:
     )
     write_json(Path(args.output), geojson)
     print(f"Wrote {len(geojson['features'])} features.")
+    return 0
+
+
+def command_mml_line_diagnostic(args: argparse.Namespace) -> int:
+    input_path = Path(args.input)
+    if input_path.suffix.lower() != ".zip":
+        raise ValueError("mml-line-diagnostic input must be a downloaded MML .zip file")
+    gpkg_path = extract_first_gpkg(input_path, input_path.with_suffix(""))
+    bbox = parse_orienteering_bbox(args.bbox)
+    magnetic_date = parse_date(args.magnetic_date)
+    magnetic_declination_deg = resolve_magnetic_declination_deg(
+        args.magnetic_declination_deg,
+        bbox=bbox,
+        magnetic_date=magnetic_date.isoformat(),
+    )
+    transform = RenderTransform(
+        bbox,
+        scale=args.scale,
+        margin_mm=args.margin_mm,
+        magnetic_declination_deg=magnetic_declination_deg,
+    )
+    report = render_mml_line_diagnostic_pdf(
+        gpkg_path,
+        Path(args.output),
+        transform=transform,
+        bbox=bbox,
+        magnetic_declination_deg=magnetic_declination_deg,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        north_line_spacing_m=args.north_line_spacing_m,
+    )
+    print(f"Wrote {report['line_part_count']} MML line parts to {report['path']}.")
+    return 0
+
+
+def command_mml_area_diagnostic(args: argparse.Namespace) -> int:
+    input_path = Path(args.input)
+    if input_path.suffix.lower() != ".zip":
+        raise ValueError("mml-area-diagnostic input must be a downloaded MML .zip file")
+    gpkg_path = extract_first_gpkg(input_path, input_path.with_suffix(""))
+    bbox = parse_orienteering_bbox(args.bbox)
+    magnetic_date = parse_date(args.magnetic_date)
+    magnetic_declination_deg = resolve_magnetic_declination_deg(
+        args.magnetic_declination_deg,
+        bbox=bbox,
+        magnetic_date=magnetic_date.isoformat(),
+    )
+    transform = RenderTransform(
+        bbox,
+        scale=args.scale,
+        margin_mm=args.margin_mm,
+        magnetic_declination_deg=magnetic_declination_deg,
+    )
+    report = render_mml_area_diagnostic_pdf(
+        gpkg_path,
+        Path(args.output),
+        transform=transform,
+        bbox=bbox,
+        magnetic_declination_deg=magnetic_declination_deg,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        north_line_spacing_m=args.north_line_spacing_m,
+    )
+    print(f"Wrote {report['area_part_count']} MML area parts to {report['path']}.")
     return 0
 
 
@@ -3741,7 +3999,7 @@ def command_generate(args: argparse.Namespace) -> int:
 
 
 def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
-    api_key = resolve_api_key(args)
+    api_key = "" if getattr(args, "use_existing_downloads", False) else resolve_api_key(args)
     output_base = Path(args.output)
     work_dir = Path(args.work_dir) if args.work_dir else output_base.parent / "downloads"
     bbox = parse_orienteering_bbox(args.bbox)
@@ -3752,25 +4010,36 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
         magnetic_date=magnetic_date.isoformat(),
     )
     archive_path = work_dir / "mml" / (output_base.stem + ".zip")
-    progress(f"Downloading MML vector data to {archive_path}...")
-    command_download(download_args_for_generate(args, archive_path))
+    if getattr(args, "use_existing_downloads", False):
+        if not archive_path.exists():
+            raise RuntimeError(f"--reuse-downloads requested but vector archive is missing: {archive_path}")
+        progress(f"Using existing MML vector data from {archive_path}.")
+    else:
+        progress(f"Downloading MML vector data to {archive_path}...")
+        command_download(download_args_for_generate(args, archive_path))
     gpkg_path = extract_first_gpkg(archive_path, work_dir / "mml" / output_base.stem)
     terrain_bbox = expand_bbox(enclosing_grid_bbox(bbox, magnetic_declination_deg), args.terrain_context_margin_m)
     laser_sheets = tm35_map_sheets_for_bbox(terrain_bbox)
-    progress(f"Downloading MML laser scanning sheets: {', '.join(laser_sheets)}")
     laser_download_path = work_dir / "mml" / f"{output_base.stem}-laser.zip"
-    laser_download_paths = download_map_sheet_process_files(
-        api_key=api_key,
-        map_sheets=laser_sheets,
-        process_id="laserkeilausaineisto_05_karttalehti",
-        file_format="LAZ",
-        output_path=laser_download_path,
-        base_url=args.base_url,
-        poll_seconds=args.poll_seconds,
-        timeout_seconds=args.timeout_seconds,
-        suffixes=(".laz", ".zip"),
-        extra_inputs={"dataSetInput": "Uusin"},
-    )
+    if getattr(args, "use_existing_downloads", False):
+        laser_download_paths = existing_download_paths(laser_download_path, (".laz", ".zip"))
+        if not laser_download_paths:
+            raise RuntimeError(f"--reuse-downloads requested but no laser downloads match {laser_download_path}")
+        progress(f"Using {len(laser_download_paths)} existing MML laser download files.")
+    else:
+        progress(f"Downloading MML laser scanning sheets: {', '.join(laser_sheets)}")
+        laser_download_paths = download_map_sheet_process_files(
+            api_key=api_key,
+            map_sheets=laser_sheets,
+            process_id="laserkeilausaineisto_05_karttalehti",
+            file_format="LAZ",
+            output_path=laser_download_path,
+            base_url=args.base_url,
+            poll_seconds=args.poll_seconds,
+            timeout_seconds=args.timeout_seconds,
+            suffixes=(".laz", ".zip"),
+            extra_inputs={"dataSetInput": "Uusin"},
+        )
     laser_dir = work_dir / "mml" / f"{output_base.stem}-laser"
     laser_paths: list[Path] = []
     for index, laser_download_path in enumerate(laser_download_paths, start=1):
@@ -3793,48 +4062,49 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
         },
     )
     lidar_rows = read_lidar_point_rows_many(laser_paths)
-    xs, ys, elevation_points, ground_report = ground_grid_from_lidar_points(
+    _xs, _ys, ground_model, ground_report = ground_grid_from_lidar_points(
         lidar_rows,
         bbox=terrain_bbox,
         cell_size_m=args.ground_cell_size_m,
         ground_quantile=args.ground_quantile,
         smoothing_sigma_m=args.ground_smoothing_sigma_m,
     )
+    orient_mml_cliff_lines_downhill(
+        vector_geojson,
+        ground_model,
+        RenderTransform(bbox, args.scale, args.margin_mm, magnetic_declination_deg=magnetic_declination_deg),
+    )
     return {
         "bbox": bbox,
         "terrain_bbox": terrain_bbox,
-        "diagnostic_output": str(output_base),
+        "raster_output": str(output_base),
+        "gpkg_path": str(gpkg_path),
         "magnetic_declination_deg": magnetic_declination_deg,
         "magnetic_date": magnetic_date.isoformat(),
         "vector_geojson": vector_geojson,
         "lidar_rows": lidar_rows,
         "laser_sheets": laser_sheets,
         "laser_paths": [str(path) for path in laser_paths],
-        "xs": xs,
-        "ys": ys,
-        "elevation_points": elevation_points,
+        "ground_model": ground_model,
         "ground_report": ground_report,
     }
 
 
 def combined_map_from_source_data(source_data: dict[str, Any], args: argparse.Namespace, *, interval_m: float) -> tuple[dict[str, Any], dict[str, Any]]:
-    xs = source_data["xs"]
-    ys = source_data["ys"]
-    elevation_points = source_data["elevation_points"]
-    contour_features = contour_features_from_xyz_grid(
-        xs,
-        ys,
-        elevation_points,
+    ground_model = source_data["ground_model"]
+    progress(f"Generating {interval_m:g} m contours from the ground model...")
+    contour_features = contour_features_from_ground_model(
+        ground_model,
         interval_m=interval_m,
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
-    cliff_features = cliff_features_from_xyz_grid(
-        xs,
-        ys,
-        elevation_points,
+    progress("Generating candidate cliff lines from ground-model slope...")
+    cliff_features = cliff_features_from_ground_model(
+        ground_model,
         slope_threshold_deg=args.slope_threshold_deg,
         min_length_m=args.min_cliff_length_m,
     )
+    progress("Generating candidate vegetation polygons from LiDAR returns...")
     vegetation_features = lidar_vegetation_features(
         source_data["lidar_rows"],
         cell_size_m=args.cell_size_m,
@@ -3896,13 +4166,15 @@ def build_combined_map(args: argparse.Namespace) -> tuple[dict[str, Any], dict[s
 def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
     source_data = build_source_data(args)
-    ensure_lidar_diagnostic_reports(source_data, output_base, args)
+    ensure_support_report_outputs(source_data, output_base, args)
+    progress("Generating combined vector map features...")
     combined, report = combined_map_from_source_data(source_data, args, interval_m=args.interval_m)
+    progress("Writing GeoJSON, terrain report, PNG, and PDF outputs...")
     render_build_outputs(output_base, combined, report, args, source_data=source_data)
     return 0
 
 
-def lidar_diagnostic_transform(source_data: dict[str, Any], args: argparse.Namespace) -> RenderTransform:
+def lidar_raster_transform(source_data: dict[str, Any], args: argparse.Namespace) -> RenderTransform:
     return RenderTransform(
         source_data["bbox"],
         args.scale,
@@ -3911,43 +4183,76 @@ def lidar_diagnostic_transform(source_data: dict[str, Any], args: argparse.Names
     )
 
 
-def ensure_lidar_point_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
-    existing = source_data.get("lidar_point_height_png")
-    if isinstance(existing, dict):
-        return existing
-    report = render_lidar_height_png(
-        source_data["lidar_rows"],
-        output_base.with_name(output_base.name + "-lidar-points").with_suffix(".png"),
-        transform=lidar_diagnostic_transform(source_data, args),
-        dpi=args.dpi,
-        map_title_text=args.map_title,
-        map_maker=args.map_maker,
-    )
-    source_data["lidar_point_height_png"] = report
+def ensure_lidar_raster_reports(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    existing = source_data.get("lidar_rasters")
+    if not isinstance(existing, dict):
+        existing = render_lidar_raster_pngs(source_data, output_base, args)
+        source_data["lidar_rasters"] = existing
+    return {"lidar_rasters": existing}
+
+
+def ensure_mml_line_diagnostic_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    existing = source_data.get("mml_line_diagnostic")
+    if not isinstance(existing, dict):
+        transform = RenderTransform(
+            source_data["bbox"],
+            args.scale,
+            args.margin_mm,
+            magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
+        )
+        existing = render_mml_line_diagnostic_pdf(
+            Path(source_data["gpkg_path"]),
+            output_base.with_name(output_base.name + "-mml-lines").with_suffix(".pdf"),
+            transform=transform,
+            bbox=source_data["bbox"],
+            magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
+            map_title_text=args.map_title,
+            map_maker=args.map_maker,
+            north_line_spacing_m=args.north_line_spacing_m,
+        )
+        source_data["mml_line_diagnostic"] = existing
+    return {"mml_line_diagnostic": existing}
+
+
+def ensure_mml_area_diagnostic_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    existing = source_data.get("mml_area_diagnostic")
+    if not isinstance(existing, dict):
+        transform = RenderTransform(
+            source_data["bbox"],
+            args.scale,
+            args.margin_mm,
+            magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
+        )
+        existing = render_mml_area_diagnostic_pdf(
+            Path(source_data["gpkg_path"]),
+            output_base.with_name(output_base.name + "-mml-areas").with_suffix(".pdf"),
+            transform=transform,
+            bbox=source_data["bbox"],
+            magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
+            map_title_text=args.map_title,
+            map_maker=args.map_maker,
+            north_line_spacing_m=args.north_line_spacing_m,
+        )
+        source_data["mml_area_diagnostic"] = existing
+    return {"mml_area_diagnostic": existing}
+
+
+def ensure_support_report_outputs(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    report: dict[str, Any] = {}
+    if not isinstance(source_data.get("mml_line_diagnostic"), dict):
+        progress("Rendering MML line-symbol diagnostic PDF...")
+    report.update(ensure_mml_line_diagnostic_report(source_data, output_base, args))
+    if not isinstance(source_data.get("mml_area_diagnostic"), dict):
+        progress("Rendering MML area-symbol diagnostic PDF...")
+    report.update(ensure_mml_area_diagnostic_report(source_data, output_base, args))
+    if not isinstance(source_data.get("lidar_rasters"), dict):
+        progress("Generating LiDAR raster support images...")
+    report.update(ensure_lidar_raster_reports(
+        source_data,
+        render_output_base(source_data.get("raster_output", str(output_base))),
+        args,
+    ))
     return report
-
-
-def ensure_lidar_return_type_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
-    existing = source_data.get("lidar_return_type_png")
-    if isinstance(existing, dict):
-        return existing
-    report = render_lidar_return_type_png(
-        source_data["lidar_rows"],
-        output_base.with_name(output_base.name + "-lidar-return-types").with_suffix(".png"),
-        transform=lidar_diagnostic_transform(source_data, args),
-        dpi=args.dpi,
-        map_title_text=args.map_title,
-        map_maker=args.map_maker,
-    )
-    source_data["lidar_return_type_png"] = report
-    return report
-
-
-def ensure_lidar_diagnostic_reports(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
-    return {
-        "lidar_point_height_png": ensure_lidar_point_report(source_data, output_base, args),
-        "lidar_return_type_png": ensure_lidar_return_type_report(source_data, output_base, args),
-    }
 
 
 def render_build_outputs(
@@ -3960,11 +4265,7 @@ def render_build_outputs(
 ) -> None:
     geojson_path = output_base.with_suffix(".geojson")
     write_json(geojson_path, combined)
-    report.update(ensure_lidar_diagnostic_reports(
-        source_data,
-        render_output_base(source_data["diagnostic_output"]),
-        args,
-    ))
+    report.update(ensure_support_report_outputs(source_data, output_base, args))
     write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
     transform = make_render_transform(
         argparse.Namespace(
@@ -4033,13 +4334,15 @@ def command_ekp(args: argparse.Namespace) -> int:
         north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
         magnetic_declination_deg="auto",
         magnetic_date=None,
+        use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
+    base_output = render_output_base(build_args.output)
+    ensure_support_report_outputs(source_data, base_output, build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = render_output_base(build_args.output).with_name(
-            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        output_base = base_output.with_name(
+            f"{base_output.name}-{contour_interval_slug(interval_m)}"
         )
         render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0
@@ -4048,7 +4351,7 @@ def command_ekp(args: argparse.Namespace) -> int:
 def command_kotka_jukola(args: argparse.Namespace) -> int:
     build_args = argparse.Namespace(
         output="builds/examples/kotka-jukola/kotka-jukola",
-        bbox="492900,6713000,495700,6717100",
+        bbox="492900,6715050,495700,6719150",
         api_key=args.api_key,
         api_key_env=args.api_key_env,
         base_url=args.base_url,
@@ -4077,13 +4380,15 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
         north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
         magnetic_declination_deg="auto",
         magnetic_date=None,
+        use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
+    base_output = render_output_base(build_args.output)
+    ensure_support_report_outputs(source_data, base_output, build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = render_output_base(build_args.output).with_name(
-            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        output_base = base_output.with_name(
+            f"{base_output.name}-{contour_interval_slug(interval_m)}"
         )
         render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0
@@ -4121,13 +4426,15 @@ def command_puijo(args: argparse.Namespace) -> int:
         north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
         magnetic_declination_deg="auto",
         magnetic_date=None,
+        use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
+    base_output = render_output_base(build_args.output)
+    ensure_support_report_outputs(source_data, base_output, build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = render_output_base(build_args.output).with_name(
-            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        output_base = base_output.with_name(
+            f"{base_output.name}-{contour_interval_slug(interval_m)}"
         )
         render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0
@@ -4136,7 +4443,7 @@ def command_puijo(args: argparse.Namespace) -> int:
 def command_vuokatinvaara(args: argparse.Namespace) -> int:
     build_args = argparse.Namespace(
         output="builds/examples/vuokatinvaara/vuokatinvaara",
-        bbox="560649,7112274,562649,7115074",
+        bbox="560649,7110874,562649,7113674",
         api_key=args.api_key,
         api_key_env=args.api_key_env,
         base_url=args.base_url,
@@ -4165,13 +4472,15 @@ def command_vuokatinvaara(args: argparse.Namespace) -> int:
         north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
         magnetic_declination_deg="auto",
         magnetic_date=None,
+        use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_diagnostic_reports(source_data, render_output_base(build_args.output), build_args)
+    base_output = render_output_base(build_args.output)
+    ensure_support_report_outputs(source_data, base_output, build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = render_output_base(build_args.output).with_name(
-            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        output_base = base_output.with_name(
+            f"{base_output.name}-{contour_interval_slug(interval_m)}"
         )
         render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0
@@ -4185,10 +4494,9 @@ def contour_interval_slug(interval_m: float) -> str:
 
 def command_contours_from_xyz(args: argparse.Namespace) -> int:
     xs, ys, points = read_xyz_grid(Path(args.input))
-    features = contour_features_from_xyz_grid(
-        xs,
-        ys,
-        points,
+    ground_model = GroundModel.from_points(xs, ys, points)
+    features = contour_features_from_ground_model(
+        ground_model,
         interval_m=args.interval_m,
         min_level=args.min_level,
         max_level=args.max_level,
@@ -4221,10 +4529,9 @@ def command_contours_from_xyz(args: argparse.Namespace) -> int:
 
 def command_cliffs_from_xyz(args: argparse.Namespace) -> int:
     xs, ys, points = read_xyz_grid(Path(args.input))
-    features = cliff_features_from_xyz_grid(
-        xs,
-        ys,
-        points,
+    ground_model = GroundModel.from_points(xs, ys, points)
+    features = cliff_features_from_ground_model(
+        ground_model,
         slope_threshold_deg=args.slope_threshold_deg,
         min_length_m=args.min_length_m,
     )
@@ -4275,17 +4582,14 @@ def command_vegetation_from_lidar(args: argparse.Namespace) -> int:
 
 def command_terrain_from_lidar(args: argparse.Namespace) -> int:
     xs, ys, points = read_xyz_grid(Path(args.xyz))
-    contour_features = contour_features_from_xyz_grid(
-        xs,
-        ys,
-        points,
+    ground_model = GroundModel.from_points(xs, ys, points)
+    contour_features = contour_features_from_ground_model(
+        ground_model,
         interval_m=args.interval_m,
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
-    cliff_features = cliff_features_from_xyz_grid(
-        xs,
-        ys,
-        points,
+    cliff_features = cliff_features_from_ground_model(
+        ground_model,
         slope_threshold_deg=args.slope_threshold_deg,
         min_length_m=args.min_cliff_length_m,
     )
@@ -4492,6 +4796,14 @@ def build_parser() -> argparse.ArgumentParser:
     common_api.add_argument("--poll-seconds", type=float, default=5.0)
     common_api.add_argument("--timeout-seconds", type=float, default=600.0)
 
+    common_example = argparse.ArgumentParser(add_help=False)
+    common_example.add_argument(
+        "--reuse-downloads",
+        dest="use_existing_downloads",
+        action="store_true",
+        help="Use files already present under the example downloads directory instead of contacting MML.",
+    )
+
     build = subparsers.add_parser(
         "build",
         parents=[common_api],
@@ -4500,13 +4812,19 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "output",
         help=(
-            "Output base path. Writes .geojson, .png, .pdf, -lidar-points.png, "
-            "-lidar-return-types.png, and -terrain-report.json."
+            "Output base path. Writes .geojson, .png, .pdf, LiDAR raster PNGs, "
+            "and -terrain-report.json."
         ),
     )
     build.add_argument("bbox", help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
     build.add_argument("--theme", default="maastotietokanta_kaikki")
     build.add_argument("--work-dir")
+    build.add_argument(
+        "--reuse-downloads",
+        dest="use_existing_downloads",
+        action="store_true",
+        help="Use files already present in the work/download directory instead of contacting MML.",
+    )
     build.add_argument("--mapping", help="JSON table mapping overrides")
     build.add_argument("--scale", type=int, default=5000)
     build.add_argument("--margin-mm", type=float, default=5.0)
@@ -4536,28 +4854,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     ekp = subparsers.add_parser(
         "ekp",
-        parents=[common_api],
+        parents=[common_api, common_example],
         help="Build the Espoon keskuspuisto example.",
     )
     ekp.set_defaults(func=command_ekp)
 
     kotka_jukola = subparsers.add_parser(
         "kotka-jukola",
-        parents=[common_api],
+        parents=[common_api, common_example],
         help="Build the Kotka-Jukola Kymi airfield example.",
     )
     kotka_jukola.set_defaults(func=command_kotka_jukola)
 
     puijo = subparsers.add_parser(
         "puijo",
-        parents=[common_api],
-        help="Build the Puijo example around Puijon torni.",
+        parents=[common_api, common_example],
+        help="Build the Puijo example.",
     )
     puijo.set_defaults(func=command_puijo)
 
     vuokatinvaara = subparsers.add_parser(
         "vuokatinvaara",
-        parents=[common_api],
+        parents=[common_api, common_example],
         help="Build the Vuokatinvaara example.",
     )
     vuokatinvaara.set_defaults(func=command_vuokatinvaara)
@@ -4592,6 +4910,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Map MML metsamaankasvillisuus polygons to ISOM 406 as a rough green forest proxy.",
     )
     convert.set_defaults(func=command_convert_gpkg)
+
+    line_diagnostic = subparsers.add_parser(
+        "mml-line-diagnostic",
+        help="Render a PDF diagnostic of raw MML GeoPackage line objects labelled by kohdeluokka.",
+    )
+    line_diagnostic.add_argument("input", help="Existing downloaded MML zip.")
+    line_diagnostic.add_argument("output", help="Output SVG path.")
+    line_diagnostic.add_argument("--bbox", required=True, help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
+    line_diagnostic.add_argument("--scale", type=int, default=5000)
+    line_diagnostic.add_argument("--margin-mm", type=float, default=5.0)
+    line_diagnostic.add_argument("--map-title", help="Title text printed in SVG layout metadata.")
+    line_diagnostic.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG layout metadata.")
+    line_diagnostic.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
+    line_diagnostic.add_argument(
+        "--magnetic-declination-deg",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK.",
+    )
+    line_diagnostic.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
+    line_diagnostic.set_defaults(func=command_mml_line_diagnostic)
+
+    area_diagnostic = subparsers.add_parser(
+        "mml-area-diagnostic",
+        help="Render a PDF diagnostic of raw MML GeoPackage area objects labelled by kohdeluokka.",
+    )
+    area_diagnostic.add_argument("input", help="Existing downloaded MML zip.")
+    area_diagnostic.add_argument("output", help="Output PDF path.")
+    area_diagnostic.add_argument("--bbox", required=True, help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
+    area_diagnostic.add_argument("--scale", type=int, default=5000)
+    area_diagnostic.add_argument("--margin-mm", type=float, default=5.0)
+    area_diagnostic.add_argument("--map-title", help="Title text printed in PDF layout metadata.")
+    area_diagnostic.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in PDF layout metadata.")
+    area_diagnostic.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
+    area_diagnostic.add_argument(
+        "--magnetic-declination-deg",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK.",
+    )
+    area_diagnostic.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
+    area_diagnostic.set_defaults(func=command_mml_area_diagnostic)
 
     generate = subparsers.add_parser(
         "generate",

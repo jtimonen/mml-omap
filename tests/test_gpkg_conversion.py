@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import argparse
 import datetime as dt
+import zipfile
 from pathlib import Path
 
 import mml_omap.cli as cli
@@ -28,24 +29,30 @@ from mml_omap.cli import (
     infer_contour_interval_m,
     iof_symbol_metadata,
     read_env_file_value,
-    render_lidar_height_png,
-    render_lidar_return_type_png,
+    render_lidar_raster_pngs,
     render_output_base,
     render_pdf,
     render_svg,
     command_symbols,
-    contour_features_from_xyz_grid,
+    command_mml_line_diagnostic,
+    command_mml_area_diagnostic,
+    contour_features_from_ground_model,
+    clean_contour_lines,
+    cliff_tag_segments_mm,
     command_contours_from_xyz,
-    cliff_features_from_xyz_grid,
+    cliff_features_from_ground_model,
     ground_grid_from_lidar_points,
     lidar_vegetation_features,
     merge_geojson_documents,
+    mml_diagnostic_features_from_gpkg,
     extract_laser_paths,
     should_render_point_symbol,
     table_rules_with_optional_forest_mask,
+    orient_mml_cliff_lines_downhill,
     validate_orienteering_bbox_size,
 )
 from mml_omap import __version__
+from mml_omap.terrain import GroundModel
 
 
 def setUpModule() -> None:
@@ -67,6 +74,65 @@ def make_gpkg(path: Path) -> None:
     )
     gpkg = b"GP" + bytes([0, 1]) + struct.pack("<I", 3067) + wkb
     connection.execute("INSERT INTO tieviiva (kohdeluokka, geom) VALUES (?, ?)", (12312, gpkg))
+    connection.commit()
+    connection.close()
+
+
+def gpkg_linestring(coordinates: list[tuple[float, float]]) -> bytes:
+    wkb = (
+        b"\x01"
+        + struct.pack("<I", 2)
+        + struct.pack("<I", len(coordinates))
+        + b"".join(struct.pack("<dd", x, y) for x, y in coordinates)
+    )
+    return b"GP" + bytes([0, 1]) + struct.pack("<I", 3067) + wkb
+
+
+def gpkg_polygon(ring: list[tuple[float, float]]) -> bytes:
+    wkb = (
+        b"\x01"
+        + struct.pack("<I", 3)
+        + struct.pack("<I", 1)
+        + struct.pack("<I", len(ring))
+        + b"".join(struct.pack("<dd", x, y) for x, y in ring)
+    )
+    return b"GP" + bytes([0, 1]) + struct.pack("<I", 3067) + wkb
+
+
+def make_line_diagnostic_gpkg(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+    connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+    for table in ("tieviiva", "virtavesikapea", "aita", "korkeuskayra", "jarvi", "tuntematonalue"):
+        connection.execute("INSERT INTO gpkg_contents VALUES (?, 'features')", (table,))
+        connection.execute("INSERT INTO gpkg_geometry_columns VALUES (?, 'geom')", (table,))
+        connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, geom BLOB)")
+    connection.execute(
+        "INSERT INTO tieviiva (kohdeluokka, geom) VALUES (?, ?)",
+        (12312, gpkg_linestring([(0.0, 0.0), (10.0, 0.0)])),
+    )
+    connection.execute(
+        "INSERT INTO virtavesikapea (kohdeluokka, geom) VALUES (?, ?)",
+        (36312, gpkg_linestring([(0.0, 2.0), (10.0, 2.0)])),
+    )
+    connection.execute(
+        "INSERT INTO aita (kohdeluokka, geom) VALUES (?, ?)",
+        (44100, gpkg_linestring([(0.0, 4.0), (10.0, 4.0)])),
+    )
+    connection.execute(
+        "INSERT INTO korkeuskayra (kohdeluokka, geom) VALUES (?, ?)",
+        (52100, gpkg_linestring([(0.0, 6.0), (10.0, 6.0)])),
+    )
+    area_wkb = (
+        b"\x01"
+        + struct.pack("<I", 3)
+        + struct.pack("<I", 1)
+        + struct.pack("<I", 5)
+        + b"".join(struct.pack("<dd", x, y) for x, y in [(1.0, 1.0), (4.0, 1.0), (4.0, 4.0), (1.0, 4.0), (1.0, 1.0)])
+    )
+    area_gpkg = b"GP" + bytes([0, 1]) + struct.pack("<I", 3067) + area_wkb
+    connection.execute("INSERT INTO jarvi (kohdeluokka, geom) VALUES (?, ?)", (36200, area_gpkg))
+    connection.execute("INSERT INTO tuntematonalue (kohdeluokka, geom) VALUES (?, ?)", (99999, area_gpkg))
     connection.commit()
     connection.close()
 
@@ -93,6 +159,307 @@ class GeoPackageConversionTest(unittest.TestCase):
         self.assertEqual(feature["properties"]["object_type"], "line")
         self.assertEqual(feature["properties"]["iof_symbol_number"], "506")
         self.assertEqual(feature["properties"]["iof_symbol_name"], "Small footpath")
+
+    def test_tieviiva_12316_maps_to_vehicle_track(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            connection = sqlite3.connect(gpkg)
+            connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+            connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+            connection.execute("INSERT INTO gpkg_contents VALUES ('tieviiva', 'features')")
+            connection.execute("INSERT INTO gpkg_geometry_columns VALUES ('tieviiva', 'geom')")
+            connection.execute("CREATE TABLE tieviiva (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, geom BLOB)")
+            connection.execute(
+                "INSERT INTO tieviiva (kohdeluokka, geom) VALUES (?, ?)",
+                (12316, gpkg_linestring([(385396.0, 6672568.0), (385400.0, 6672572.0)])),
+            )
+            connection.commit()
+            connection.close()
+
+            geojson = convert_gpkg_to_geojson(
+                gpkg,
+                bbox=[385395, 6672567, 385401, 6672573],
+                table_rules=DEFAULT_TABLE_RULES,
+                include_unmapped=False,
+            )
+
+        self.assertEqual(len(geojson["features"]), 1)
+        feature = geojson["features"][0]
+        self.assertEqual(feature["properties"]["source_table"], "tieviiva")
+        self.assertEqual(feature["properties"]["kohdeluokka"], 12316)
+        self.assertEqual(feature["properties"]["symbol"], "504")
+        self.assertEqual(feature["properties"]["iof_symbol_number"], "504")
+        self.assertEqual(feature["properties"]["iof_symbol_name"], "Vehicle track")
+        self.assertEqual(cli.feature_style(feature)["stroke_width_mm"], 0.35)
+
+    def test_jyrkanne_34400_maps_to_impassable_cliff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            connection = sqlite3.connect(gpkg)
+            connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+            connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+            connection.execute("INSERT INTO gpkg_contents VALUES ('jyrkanne', 'features')")
+            connection.execute("INSERT INTO gpkg_geometry_columns VALUES ('jyrkanne', 'geom')")
+            connection.execute("CREATE TABLE jyrkanne (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, geom BLOB)")
+            connection.execute(
+                "INSERT INTO jyrkanne (kohdeluokka, geom) VALUES (?, ?)",
+                (34400, gpkg_linestring([(385396.0, 6672568.0), (385400.0, 6672572.0)])),
+            )
+            connection.commit()
+            connection.close()
+
+            geojson = convert_gpkg_to_geojson(
+                gpkg,
+                bbox=[385395, 6672567, 385401, 6672573],
+                table_rules=DEFAULT_TABLE_RULES,
+                include_unmapped=False,
+            )
+
+        self.assertEqual(len(geojson["features"]), 1)
+        feature = geojson["features"][0]
+        self.assertEqual(feature["properties"]["symbol"], "201")
+        self.assertEqual(feature["properties"]["iof_symbol_number"], "201")
+        self.assertEqual(feature["properties"]["iof_symbol_name"], "Impassable cliff")
+
+    def test_mml_kivi_maps_to_large_boulder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            connection = sqlite3.connect(gpkg)
+            connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+            connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+            connection.execute("INSERT INTO gpkg_contents VALUES ('kivi', 'features')")
+            connection.execute("INSERT INTO gpkg_geometry_columns VALUES ('kivi', 'geom')")
+            connection.execute("CREATE TABLE kivi (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, geom BLOB)")
+            wkb = b"\x01" + struct.pack("<I", 1) + struct.pack("<dd", 385396.0, 6672568.0)
+            gpkg_geometry = b"GP" + bytes([0, 1]) + struct.pack("<I", 3067) + wkb
+            connection.execute("INSERT INTO kivi (kohdeluokka, geom) VALUES (?, ?)", (34600, gpkg_geometry))
+            connection.commit()
+            connection.close()
+
+            geojson = convert_gpkg_to_geojson(
+                gpkg,
+                bbox=[385395, 6672567, 385397, 6672569],
+                table_rules=DEFAULT_TABLE_RULES,
+                include_unmapped=False,
+            )
+
+        self.assertEqual(len(geojson["features"]), 1)
+        feature = geojson["features"][0]
+        self.assertEqual(feature["properties"]["symbol"], "205")
+        self.assertEqual(feature["properties"]["iof_symbol_number"], "205")
+        self.assertEqual(feature["properties"]["iof_symbol_name"], "Large boulder")
+
+    def test_autoliikennealue_32421_maps_to_open_land(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            connection = sqlite3.connect(gpkg)
+            connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+            connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+            connection.execute("INSERT INTO gpkg_contents VALUES ('autoliikennealue', 'features')")
+            connection.execute("INSERT INTO gpkg_geometry_columns VALUES ('autoliikennealue', 'geom')")
+            connection.execute("CREATE TABLE autoliikennealue (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, geom BLOB)")
+            connection.execute(
+                "INSERT INTO autoliikennealue (kohdeluokka, geom) VALUES (?, ?)",
+                (32421, gpkg_polygon([(385395.0, 6672567.0), (385401.0, 6672567.0), (385401.0, 6672573.0), (385395.0, 6672573.0), (385395.0, 6672567.0)])),
+            )
+            connection.commit()
+            connection.close()
+
+            geojson = convert_gpkg_to_geojson(
+                gpkg,
+                bbox=[385395, 6672567, 385401, 6672573],
+                table_rules=DEFAULT_TABLE_RULES,
+                include_unmapped=False,
+            )
+
+        self.assertEqual(len(geojson["features"]), 1)
+        feature = geojson["features"][0]
+        self.assertEqual(feature["properties"]["source_table"], "autoliikennealue")
+        self.assertEqual(feature["properties"]["kohdeluokka"], 32421)
+        self.assertEqual(feature["properties"]["object_type"], "area")
+        self.assertEqual(feature["properties"]["symbol"], "401")
+        self.assertEqual(feature["properties"]["iof_symbol_number"], "401")
+        self.assertEqual(feature["properties"]["iof_symbol_name"], "Open land")
+
+    def test_impassable_cliff_svg_renders_tags(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"symbol": "201", "object_type": "line"},
+                    "geometry": {"type": "LineString", "coordinates": [[0.0, 5.0], [10.0, 5.0]]},
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "cliff.svg"
+            render_svg(geojson, output, transform=RenderTransform([0.0, 0.0, 10.0, 10.0], 1000, 5.0))
+            svg = output.read_text(encoding="utf-8")
+
+        self.assertIn("<line", svg)
+        self.assertGreater(svg.count("stroke-width=\"0.250\""), 1)
+
+    def test_mml_cliff_lines_are_oriented_with_tags_downhill(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "source_table": "jyrkanne",
+                        "symbol": "201",
+                        "iof_symbol_number": "201",
+                        "object_type": "line",
+                    },
+                    "geometry": {"type": "LineString", "coordinates": [[0.0, 5.0], [10.0, 5.0]]},
+                }
+            ],
+        }
+        xs = [0.0, 5.0, 10.0]
+        ys = [0.0, 5.0, 10.0]
+        ground_model = GroundModel.from_points(xs, ys, {(x, y): y for x in xs for y in ys})
+        transform = RenderTransform([0.0, 0.0, 10.0, 10.0], 1000, 5.0)
+
+        orient_mml_cliff_lines_downhill(geojson, ground_model, transform)
+        line = geojson["features"][0]["geometry"]["coordinates"]
+        tags = cliff_tag_segments_mm(line, transform, {"cliff_tags": True})
+
+        self.assertEqual(line, [[10.0, 5.0], [0.0, 5.0]])
+        self.assertTrue(tags)
+        self.assertGreater(tags[0][1][1], tags[0][0][1])
+
+    def test_mml_line_diagnostic_reads_downloaded_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            archive = Path(directory) / "sample.zip"
+            output = Path(directory) / "lines.pdf"
+            make_line_diagnostic_gpkg(gpkg)
+            with zipfile.ZipFile(archive, "w") as zip_file:
+                zip_file.write(gpkg, "sample.gpkg")
+
+            exit_code = command_mml_line_diagnostic(
+                argparse.Namespace(
+                    input=str(archive),
+                    output=str(output),
+                    bbox="0,0,10,8",
+                    scale=1000,
+                    margin_mm=5.0,
+                    map_title=None,
+                    map_maker="mml-omap",
+                    north_line_spacing_m=300.0,
+                    magnetic_declination_deg="0",
+                    magnetic_date=None,
+                )
+            )
+            output_exists = output.exists()
+            pdf = output.read_bytes()
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(output_exists)
+        self.assertTrue(pdf.startswith(b"%PDF-1."))
+        text = pdf.decode("latin-1", "replace")
+        self.assertIn("(12312)", text)
+        self.assertIn("(36312)", text)
+        self.assertIn("(44100)", text)
+        self.assertEqual(text.count("(12312)"), 1)
+        self.assertEqual(text.count("(36312)"), 1)
+        self.assertEqual(text.count("(44100)"), 1)
+        self.assertNotIn("(52100)", text)
+
+    def test_mml_area_diagnostic_reads_downloaded_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            archive = Path(directory) / "sample.zip"
+            output = Path(directory) / "areas.pdf"
+            make_line_diagnostic_gpkg(gpkg)
+            with zipfile.ZipFile(archive, "w") as zip_file:
+                zip_file.write(gpkg, "sample.gpkg")
+
+            exit_code = command_mml_area_diagnostic(
+                argparse.Namespace(
+                    input=str(archive),
+                    output=str(output),
+                    bbox="0,0,10,8",
+                    scale=1000,
+                    margin_mm=5.0,
+                    map_title=None,
+                    map_maker="mml-omap",
+                    north_line_spacing_m=300.0,
+                    magnetic_declination_deg="0",
+                    magnetic_date=None,
+                )
+            )
+            pdf = output.read_bytes()
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(pdf.startswith(b"%PDF-1."))
+        text = pdf.decode("latin-1", "replace")
+        self.assertIn("(36200)", text)
+        self.assertIn("(99999)", text)
+        self.assertEqual(text.count("(36200)"), 1)
+        self.assertEqual(text.count("(99999)"), 1)
+
+    def test_mml_diagnostics_color_only_unmapped_red(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            make_line_diagnostic_gpkg(gpkg)
+            features = mml_diagnostic_features_from_gpkg(
+                gpkg,
+                bbox=[0.0, 0.0, 10.0, 8.0],
+                clip_frame=OrientedFrame([0.0, 0.0, 10.0, 8.0], 0.0),
+                table_rules=DEFAULT_TABLE_RULES,
+                geometry_types={"LineString", "MultiLineString", "Polygon", "MultiPolygon"},
+            )
+
+        by_class = {feature["properties"]["kohdeluokka"]: feature["properties"] for feature in features}
+        self.assertTrue(by_class[12312]["diagnostic_mapped"])
+        self.assertEqual(by_class[12312]["diagnostic_color"], (0, 0, 0))
+        self.assertTrue(by_class[36312]["diagnostic_mapped"])
+        self.assertEqual(by_class[36312]["diagnostic_color"], (0, 102, 204))
+        self.assertFalse(by_class[99999]["diagnostic_mapped"])
+        self.assertEqual(by_class[99999]["diagnostic_color"], (204, 0, 0))
+
+    def test_support_reports_render_mml_before_lidar(self) -> None:
+        calls: list[tuple[str, Path]] = []
+        original_line = cli.ensure_mml_line_diagnostic_report
+        original_area = cli.ensure_mml_area_diagnostic_report
+        original_lidar = cli.ensure_lidar_raster_reports
+
+        def fake_line(source_data: dict, output_base: Path, args: argparse.Namespace) -> dict:
+            calls.append(("line", output_base))
+            source_data["mml_line_diagnostic"] = {"path": "line.pdf"}
+            return {"mml_line_diagnostic": source_data["mml_line_diagnostic"]}
+
+        def fake_area(source_data: dict, output_base: Path, args: argparse.Namespace) -> dict:
+            calls.append(("area", output_base))
+            source_data["mml_area_diagnostic"] = {"path": "area.pdf"}
+            return {"mml_area_diagnostic": source_data["mml_area_diagnostic"]}
+
+        def fake_lidar(source_data: dict, output_base: Path, args: argparse.Namespace) -> dict:
+            calls.append(("lidar", output_base))
+            source_data["lidar_rasters"] = {"reports": []}
+            return {"lidar_rasters": source_data["lidar_rasters"]}
+
+        try:
+            cli.ensure_mml_line_diagnostic_report = fake_line
+            cli.ensure_mml_area_diagnostic_report = fake_area
+            cli.ensure_lidar_raster_reports = fake_lidar
+            source_data = {"raster_output": "builds/examples/example/example"}
+            output_base = Path("builds/examples/example/example-1m")
+            report = cli.ensure_support_report_outputs(source_data, output_base, argparse.Namespace())
+        finally:
+            cli.ensure_mml_line_diagnostic_report = original_line
+            cli.ensure_mml_area_diagnostic_report = original_area
+            cli.ensure_lidar_raster_reports = original_lidar
+
+        self.assertEqual([name for name, _ in calls], ["line", "area", "lidar"])
+        self.assertEqual(calls[0][1], output_base)
+        self.assertEqual(calls[1][1], output_base)
+        self.assertEqual(calls[2][1], render_output_base(source_data["raster_output"]))
+        self.assertIn("mml_line_diagnostic", report)
+        self.assertIn("mml_area_diagnostic", report)
+        self.assertIn("lidar_rasters", report)
 
     def test_convert_gpkg_does_not_emit_non_isom_symbols(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -302,9 +669,16 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertEqual(library["source"]["standard"], "ISOM 2017-2 Revision 6")
         self.assertIn("Do not import GPL/proprietary", library["source"]["asset_policy"])
+        self.assertEqual(library["symbols"]["impassable_cliff"]["iof_symbol_number"], "201")
+        self.assertEqual(library["symbols"]["large_boulder"]["iof_symbol_number"], "205")
+        self.assertEqual(library["symbols"]["boulder_field"]["iof_symbol_number"], "208")
         self.assertEqual(library["symbols"]["major_road"]["iof_symbol_number"], "502")
         self.assertEqual(library["symbols"]["major_road"]["geometry"], "line")
         self.assertEqual(library["symbols"]["major_road"]["style"]["inner_stroke"], "#b68a57")
+        self.assertEqual(library["symbols"]["road"]["style"]["stroke_width_mm"], 0.35)
+        self.assertEqual(library["symbols"]["small_road"]["style"]["stroke_width_mm"], 0.35)
+        self.assertEqual(library["symbols"]["path"]["style"]["stroke_width_mm"], 0.25)
+        self.assertEqual(library["symbols"]["small_path"]["style"]["stroke_width_mm"], 0.18)
 
     def test_svg_render_uses_iof_like_water_marsh_field_and_road_symbols(self) -> None:
         geojson = {
@@ -363,6 +737,18 @@ class OrienteeringBoundsTest(unittest.TestCase):
         }
 
         self.assertEqual(feature_symbol(feature), "field")
+
+    def test_airfield_areas_map_to_open_land(self) -> None:
+        for table in ("lentokenttaalue", "lentokentankiitotie"):
+            object_type, symbol = cli.classify_feature(
+                table,
+                {"kohdeluokka": 32400},
+                {"type": "Polygon", "coordinates": []},
+                DEFAULT_TABLE_RULES[table],
+            )
+
+            self.assertEqual(object_type, "area")
+            self.assertEqual(symbol, "field")
 
     def test_svg_render_includes_layout_metadata_and_north_lines(self) -> None:
         geojson = {"type": "FeatureCollection", "features": []}
@@ -482,7 +868,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
             (10.0, 10.0): 10.0,
         }
 
-        features = contour_features_from_xyz_grid(xs, ys, points, interval_m=5.0)
+        features = contour_features_from_ground_model(GroundModel.from_points(xs, ys, points), interval_m=5.0)
 
         self.assertEqual(len(features), 1)
         self.assertEqual(features[0]["properties"]["symbol"], "101")
@@ -499,20 +885,65 @@ class OrienteeringBoundsTest(unittest.TestCase):
             (10.0, 10.0): 30.0,
         }
 
-        features = contour_features_from_xyz_grid(xs, ys, points, interval_m=5.0, index_contour_every=2)
+        features = contour_features_from_ground_model(
+            GroundModel.from_points(xs, ys, points),
+            interval_m=5.0,
+            index_contour_every=2,
+        )
 
         self.assertTrue(any(feature["properties"]["symbol"] == "102" for feature in features))
+
+    def test_contour_cleanup_splits_self_intersections(self) -> None:
+        from shapely.geometry import LineString
+
+        lines = clean_contour_lines(
+            [[0.0, 0.0], [10.0, 10.0], [0.0, 10.0], [10.0, 0.0]],
+            simplify_tolerance_m=0.0,
+        )
+
+        self.assertGreater(len(lines), 1)
+        for line in lines:
+            self.assertGreaterEqual(len(line), 2)
+            self.assertTrue(LineString(line).is_simple)
+
+    def test_contour_cleanup_removes_tiny_closed_rings(self) -> None:
+        lines = clean_contour_lines(
+            [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]],
+            simplify_tolerance_m=0.0,
+            min_closed_area_m2=10.0,
+        )
+
+        self.assertEqual(lines, [])
+
+    def test_contour_cleanup_keeps_large_closed_rings_and_open_lines(self) -> None:
+        large_ring = clean_contour_lines(
+            [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.0, 0.0]],
+            simplify_tolerance_m=0.0,
+            min_closed_area_m2=10.0,
+        )
+        open_line = clean_contour_lines(
+            [[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]],
+            simplify_tolerance_m=0.0,
+            min_closed_area_m2=10.0,
+        )
+
+        self.assertEqual(len(large_ring), 1)
+        self.assertEqual(len(open_line), 1)
 
     def test_lidar_xyz_grid_generates_candidate_cliffs(self) -> None:
         xs = [0.0, 10.0, 20.0]
         ys = [0.0, 10.0, 20.0]
         points = {
-            (x, y): (20.0 if x >= 10.0 else 0.0)
+            (x, y): (0.0 if x == 0.0 else 5.0 if x == 10.0 else 20.0)
             for x in xs
             for y in ys
         }
 
-        features = cliff_features_from_xyz_grid(xs, ys, points, slope_threshold_deg=30.0, min_length_m=1.0)
+        features = cliff_features_from_ground_model(
+            GroundModel.from_points(xs, ys, points),
+            slope_threshold_deg=30.0,
+            min_length_m=1.0,
+        )
 
         self.assertTrue(features)
         self.assertEqual(features[0]["properties"]["symbol"], "202")
@@ -608,7 +1039,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
             (1.0, 1.0, 11.2, 2),
         ]
 
-        _xs, _ys, _points, report = ground_grid_from_lidar_points(
+        _xs, _ys, _ground_model, report = ground_grid_from_lidar_points(
             rows,
             bbox=[0.0, 0.0, 1.0, 1.0],
             cell_size_m=1.0,
@@ -618,56 +1049,53 @@ class OrienteeringBoundsTest(unittest.TestCase):
         self.assertEqual(report["observation_model"], "elevation_observation(x,y) = mu(x,y) + epsilon")
         self.assertIn("global_noise_estimate_m", report)
 
-    def test_lidar_height_png_reports_viridis_point_render(self) -> None:
+    def test_lidar_rasters_write_expected_png_set(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            output_path = Path(directory) / "points.png"
-            report = render_lidar_height_png(
-                [
-                    (0.0, 0.0, 10.0, 2),
-                    (1.0, 1.0, 12.0, 5),
-                    (2.0, 2.0, 14.0, 1),
+            output_base = Path(directory) / "demo"
+            xs = [0.0, 1.0, 2.0]
+            ys = [0.0, 1.0, 2.0]
+            elevation_points = {(x, y): x + y for x in xs for y in ys}
+            source_data = {
+                "bbox": [0.0, 0.0, 2.0, 2.0],
+                "magnetic_declination_deg": 0.0,
+                "ground_model": GroundModel.from_points(xs, ys, elevation_points),
+                "lidar_rows": [
+                    (0.2, 0.2, 0.4, 2),
+                    (0.2, 0.2, 1.4, 3),
+                    (1.2, 0.2, 1.4, 2),
+                    (1.2, 0.2, 3.2, 5),
+                    (0.2, 1.2, 1.4, 2),
+                    (0.2, 1.2, 2.2, 1),
                 ],
-                output_path,
-                transform=RenderTransform([0.0, 0.0, 2.0, 2.0], 100, 5),
+            }
+            args = argparse.Namespace(
+                scale=100,
+                margin_mm=5.0,
                 dpi=96,
+                map_title="Demo",
+                map_maker="mml-omap",
             )
 
-            self.assertTrue(output_path.exists())
-            self.assertEqual(output_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual(report["height_color_ramp"], "viridis")
-            self.assertEqual(report["point_count"], 3)
-            self.assertEqual(report["paper_size"], "A5 portrait")
-            self.assertEqual(report["scale"], 100)
-            self.assertGreater(report["width_px"], report["plot_width_px"])
-            self.assertGreater(report["height_px"], report["plot_height_px"])
-            self.assertEqual(report["software_version"], __version__)
+            reports = render_lidar_raster_pngs(source_data, output_base, args)
 
-    def test_lidar_return_type_png_reports_class_counts(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            output_path = Path(directory) / "types.png"
-            report = render_lidar_return_type_png(
-                [
-                    (0.0, 0.0, 10.0, 2),
-                    (0.2, 0.2, 10.0, 9),
-                    (0.4, 0.4, 10.0, 3),
-                    (0.6, 0.6, 10.0, 4),
-                    (0.8, 0.8, 10.0, 5),
-                    (1.0, 1.0, 10.0, 6),
-                ],
-                output_path,
-                transform=RenderTransform([0.0, 0.0, 1.0, 1.0], 100, 5),
-                dpi=96,
-            )
-
-            self.assertTrue(output_path.exists())
-            self.assertEqual(output_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual(report["return_type_counts"]["ground"], 1)
-            self.assertEqual(report["return_type_counts"]["water"], 1)
-            self.assertEqual(report["return_type_counts"]["low_vegetation"], 1)
-            self.assertEqual(report["return_type_counts"]["medium_vegetation"], 1)
-            self.assertEqual(report["return_type_counts"]["high_vegetation"], 1)
-            self.assertEqual(report["return_type_counts"]["building"], 1)
-            self.assertEqual(report["software_version"], __version__)
+            expected = {
+                "ground_elevation",
+                "ground_shading",
+                "ground_slope",
+                "surface_elevation",
+                "surface_shading",
+                "surface_slope",
+                "ground_coverage",
+                "vegetation_height",
+                "median_point_height",
+                "return_types",
+            }
+            self.assertEqual(set(reports), expected)
+            for report in reports.values():
+                self.assertTrue(Path(report["path"]).exists())
+                self.assertEqual(Path(report["path"]).read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertIn("lidar-rasters", report["path"])
+            self.assertEqual(reports["return_types"]["cell_value"], "dominant_las_return_type")
 
     def test_extract_laser_paths_accepts_direct_laz_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

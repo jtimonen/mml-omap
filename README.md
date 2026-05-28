@@ -7,7 +7,7 @@ laser scanning point clouds.
 
 The normal workflow is one command: download MML topographic vector data,
 download the covering 0.5 p LAZ map sheets, build the terrain model from the
-point cloud, then write GeoJSON, PNG, PDF, a LiDAR diagnostic PNG, and a terrain
+point cloud, then write GeoJSON, PNG, PDF, LiDAR raster PNGs, and a terrain
 report. Rendered maps use the smallest A5, A4, or A3 portrait/landscape page
 that fits the requested map frame at the requested scale.
 
@@ -61,75 +61,38 @@ Do not commit `.env`.
 - MML 0.5 p laser scanning data downloaded automatically from
   `laserkeilausaineisto_05_karttalehti`.
 
-## Espoon Keskuspuisto Example
+## Examples
 
-This 1:10000 example is centered on Espoon keskuspuisto at
-`60.1880680, 24.6967986`. The bbox is `371255,6673869,373305,6675299` in
-EPSG:3067 meters.
+Built-in 1:10000 examples write map outputs, terrain reports, LiDAR rasters,
+MML line/area diagnostic PDFs, and downloaded source data under
+`builds/examples/<name>/`.
 
-All generated files go under `builds/examples/espoo-keskuspuisto/`, which is
-easy to gitignore or delete.
+| Command | Area | EPSG:3067 bbox |
+| --- | --- | --- |
+| `uv run mml-omap ekp` | Espoon keskuspuisto | `371255,6673869,373305,6675299` |
+| `uv run mml-omap kotka-jukola` | Kymi airfield / Kotka-Jukola training-ban area | `492900,6715050,495700,6719150` |
+| `uv run mml-omap puijo` | Puijo | `532615,6974711,534029,6976689` |
+| `uv run mml-omap vuokatinvaara` | Vuokatinvaara | `560649,7110874,562649,7113674` |
 
-```sh
-uv run mml-omap ekp
-```
-
-The command writes:
-
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.geojson`
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.png`
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-1m.pdf`
-- matching `espoo-keskuspuisto-2_5m.*` and `espoo-keskuspuisto-5m.*` outputs
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-lidar-points.png`
-- `builds/examples/espoo-keskuspuisto/espoo-keskuspuisto-lidar-return-types.png`
-- `espoo-keskuspuisto-1m-terrain-report.json`,
-  `espoo-keskuspuisto-2_5m-terrain-report.json`, and
-  `espoo-keskuspuisto-5m-terrain-report.json`
-- `builds/examples/espoo-keskuspuisto/downloads/`
-
-## Kotka-Jukola Example
-
-This 1:10000 example is centered around Kymi airfield and covers part of
-the Kotka-Jukola 2026 harjoituskieltoalue shown on the event site. The bbox is
-`492900,6713000,495700,6717100` in EPSG:3067 meters.
-
-All generated files go under `builds/examples/kotka-jukola/`.
+Rebuild an example from existing files in its `downloads/` directory without
+contacting MML:
 
 ```sh
-uv run mml-omap kotka-jukola
+uv run mml-omap ekp --reuse-downloads
 ```
 
-The command writes `kotka-jukola-1m.*`, `kotka-jukola-2_5m.*`, and
-`kotka-jukola-5m.*` map outputs, shared `kotka-jukola-lidar-points.png` and
-`kotka-jukola-lidar-return-types.png` diagnostics, terrain reports, and the
-source downloads.
-
-## Puijo Example
-
-This 1:10000 example is around Puijon torni. The bbox
-is `532615,6974711,534029,6976689` in EPSG:3067 meters.
+Remove generated build artifacts while keeping downloaded source files:
 
 ```sh
-uv run mml-omap puijo
+bash tools/clean-builds.sh
 ```
 
-The command writes `puijo-1m.*`, `puijo-2_5m.*`, and `puijo-5m.*` map outputs,
-shared `puijo-lidar-points.png` and `puijo-lidar-return-types.png` diagnostics,
-terrain reports, and the source downloads under `builds/examples/puijo/`.
-
-## Vuokatinvaara Example
-
-This 1:10000 example is around Vuokatinvaara and fits on A4 portrait. The bbox
-is `560649,7112274,562649,7115074` in EPSG:3067 meters.
+Render only the MML line or area diagnostic from an existing downloaded MML zip:
 
 ```sh
-uv run mml-omap vuokatinvaara
+uv run mml-omap mml-line-diagnostic path/to/source.zip builds/mml-lines.pdf --bbox 371255,6673869,373305,6675299 --scale 10000
+uv run mml-omap mml-area-diagnostic path/to/source.zip builds/mml-areas.pdf --bbox 371255,6673869,373305,6675299 --scale 10000
 ```
-
-The command writes `vuokatinvaara-1m.*`, `vuokatinvaara-2_5m.*`, and
-`vuokatinvaara-5m.*` map outputs, shared `vuokatinvaara-lidar-points.png` and
-`vuokatinvaara-lidar-return-types.png` diagnostics, terrain reports, and the
-source downloads under `builds/examples/vuokatinvaara/`.
 
 ## What It Generates
 
@@ -137,6 +100,9 @@ The build output combines:
 
 - MML vector objects: paths, roads, water, marshes, open-land proxies,
   buildings, fences, rocks, MML cliff vectors, and other mapped features.
+- MML line and area diagnostic PDFs: raw GeoPackage objects in the same page
+  frame as the map, labelled with `kohdeluokka`; red marks objects not
+  currently mapped into the orienteering map.
 - Point-cloud contours: generated from a continuous ground grid built from
   classified LAZ ground points.
 - Point-cloud cliff candidates: generated from steep slope bands in the same

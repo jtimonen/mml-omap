@@ -19,6 +19,7 @@ locally.
 Primary references:
 
 - MML Maastotietokanta product description and GeoPackage source data.
+- MML Maastotietokohteet 2025 reference in `reference/`.
 - IOF ISOM 2017-2 / O-Map Wiki symbol definitions.
 - Karttapullautin vectorconf practice, as documented by Orienteering BC.
 
@@ -40,9 +41,11 @@ Features without an ISOM symbol assignment are skipped by default. With
 
 | MML table | MML `kohdeluokka` | ISOM symbol | ISOM name | Notes |
 | --- | --- | --- | --- | --- |
-| `jyrkanne` | all | `202` | Cliff | MML cliff line. Impassable/passable distinction is not inferred yet. |
+| `jyrkanne` | `34400` | `201` | Impassable cliff | MML cliff class mapped as impassable cliff. |
+| `jyrkanne` | other mapped values | `202` | Cliff | Default MML cliff line where passability is not inferred. |
 | `kallioalue` | all | `214` | Bare rock | MML rock area. This is a source-data proxy, not field-checked bare rock. |
-| `kivi` | all | `204` | Boulder | MML point rock. Size classes are not inferred yet. |
+| `kivi` | all | `205` | Large boulder | MML `Kivi` is a prominent large boulder class, not a generic small boulder. |
+| `kivikko` | all | `208` | Boulder field | MML boulder/rock field area when present as a GeoPackage table. |
 | `jarvi` | all | `301` | Uncrossable body of water | Lake/body of water polygon. |
 | `meri` | all | `301` | Uncrossable body of water | Sea/water polygon. |
 | `virtavesialue` | all | `301` | Uncrossable body of water | Wide river/stream polygon. |
@@ -54,6 +57,9 @@ Features without an ISOM symbol assignment are skipped by default. With
 | `niitty` | all | `401` | Open land | Open-land proxy. |
 | `muuavoinalue` | all | `401` | Open land | Open-land proxy. |
 | `puisto` | all | `401` | Open land | Open-land proxy; may be wrong for wooded parks. |
+| `lentokenttaalue` | all | `401` | Open land | Airfield area proxy; paved/private access semantics are not inferred. |
+| `lentokentankiitotie` | all | `401` | Open land | Runway area proxy so airfields do not render as outline-only gaps. |
+| `autoliikennealue` | `32421` | `401` | Open land | MML motor-traffic area proxy; paved/private access semantics are not inferred. |
 | `tieviiva` | `12111`, `12112`, `12121`, `12122`, `12131`, `12132` | `502` | Wide road | Mapped as wide road with black edges and brown infill. |
 | `tieviiva` | `12141`, `12142` | `503` | Road | Small driveable road proxy. |
 | `tieviiva` | `12151`, `12152` | none | none | Ferry/lossi transport lines are not rendered as terrain roads. |
@@ -85,7 +91,6 @@ from downloaded MML laser scanning point clouds:
 | MML table | Reason |
 | --- | --- |
 | `paikannimi` | Place-name labels are not numbered ISOM terrain/object symbols. |
-| `urheilujavirkistysalue` | all | `401` | Open land | Recreation/sports areas such as football fields are rendered as open land instead of black outline-only areas. |
 | Any unmapped table | No documented ISOM mapping has been assigned yet. |
 
 ## Known Gaps
@@ -97,9 +102,9 @@ data or field interpretation before they can be mapped responsibly:
   `406`/`410` polygons, but thresholds are local and need review
 - uncrossable marsh `307` versus marsh `308`
 - impassable fence/wall symbols
-- boulder size classes and boulder clusters
+- boulder clusters
 - paved area versus private/out-of-bounds area
 - path distinctness and road/track usability
-- final cliff classification; the LiDAR pipeline generates candidate `202`
+- final point-cloud cliff classification; the LiDAR pipeline generates candidate `202`
   lines from slope bands, but passability and symbol selection still need review
 

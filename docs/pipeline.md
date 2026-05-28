@@ -8,7 +8,8 @@ terrain modelling, generated features, algorithms, and known gaps.
 The primary build path uses:
 
 - MML `maastotietokanta_bbox` vector data for roads, paths, water, marshes,
-  buildings, fences, rocks, open-land proxies, and other mapped objects.
+  buildings, fences, rocks, motor-traffic/open-land proxies, and other mapped
+  objects.
 - MML `laserkeilausaineisto_05_karttalehti` LAZ point clouds for contours,
   candidate cliffs, and vegetation candidates.
 
@@ -69,12 +70,38 @@ report includes the contour interval, downloaded laser sheets, point-cloud grid
 parameters, global and per-cell noise estimates, interpolation distances, and
 generated feature counts.
 
-Each source-data build also writes two LiDAR diagnostic images on the same
-standard paper size, orientation, scale, and map frame as the rendered map.
-`*-lidar-points.png` plots every observed point inside the rendered map frame
-at its map position and colors it by height with the viridis color ramp.
-`*-lidar-return-types.png` plots the same point cloud colored by LAS return
-class group:
+Each source-data build writes LiDAR raster support images under
+`lidar-rasters/` next to the generated maps. They use the same standard paper
+size, orientation, scale, map frame, and magnetic-north rotation as the rendered
+map.
+
+## MML Line Diagnostic
+
+Builds also write `*-mml-lines.pdf` and `*-mml-areas.pdf`, vector diagnostics
+rendered directly from the downloaded MML GeoPackage. They do not use the
+symbolized GeoJSON conversion, so they can show raw objects before table and
+symbol mapping. The diagnostics use the same page size, scale, margin, bbox,
+clipping, and magnetic-north rotation as the normal map. Each retained
+GeoPackage object is drawn with its `kohdeluokka` label. Red means the object
+does not currently map to an ISOM symbol and will not be emitted into the
+orienteering map; mapped objects use black, brown, green, gray, or blue category
+colors. MML contour tables are excluded.
+
+The same renderer is available as a standalone command for already downloaded
+MML zip files:
+
+```sh
+uv run mml-omap mml-line-diagnostic source.zip output.pdf --bbox min_x,min_y,max_x,max_y
+uv run mml-omap mml-area-diagnostic source.zip output.pdf --bbox min_x,min_y,max_x,max_y
+```
+
+`*-median-point-height.png` colors each occupied 1 m x 1 m cell by the median
+raw LiDAR return elevation in that cell. This keeps perceived brightness from
+being controlled by local point density.
+
+`*-return-types.png` colors each occupied 1 m x 1 m cell by its dominant LAS
+return class group, not by individual overplotted points. The report includes
+both point counts and dominant-cell counts for these groups:
 
 | Group | LAS classes | Diagnostic color |
 | --- | --- | --- |
@@ -87,10 +114,25 @@ class group:
 | Noise | `7`, `18` | magenta |
 | Other | all other or missing classes | gray |
 
-Both images include the same footer metadata as the map outputs plus point
-counts and legends. All terrain reports generated from the same source data
-reference those image paths, pixel sizes, point counts, software version, paper
-size, scale, and diagnostic-specific legend data.
+The terrain report stores these files under the `lidar_rasters` key:
+
+| Output suffix | Meaning |
+| --- | --- |
+| `-ground-elevation.png` | Ground model elevation colored by height in metres. |
+| `-ground-shading.png` | Analytical hillshade from the ground model. |
+| `-ground-slope.png` | Ground model slope; darker pixels are steeper. |
+| `-surface-elevation.png` | Surface elevation from highest observed return over ground, colored by height in metres. |
+| `-surface-shading.png` | Analytical hillshade from the surface model. |
+| `-surface-slope.png` | Surface slope; darker pixels are steeper. |
+| `-ground-coverage.png` | Blue means no point, yellow means points but no ground return, black means ground return present. |
+| `-vegetation-height.png` | Maximum vegetation-candidate return height above ground. |
+
+Continuous color rasters include an in-image color-scale legend. These rasters
+use 1 m cells, matching the OpenOrienteering LaserScan tool's typical pixel
+distance, but the implementation is independent and uses the existing
+`mml-omap` ground model and source point rows. They are intended as map-making
+support layers; map feature generation still uses the
+vector algorithms described below.
 
 ## Ground Model
 
@@ -125,34 +167,42 @@ local variation. In that case the terrain report uses a conservative 0.15 m
 noise floor. On sparse 0.5 p data with 1 m grid cells, many cells hit that
 fallback, so `global_noise_estimate_m` can remain 0.15 m across builds.
 
-`mu(x, y)` is represented as a regular raster surface. Elevation at arbitrary
-locations inside the map can be evaluated by interpolation on that surface, and
-contours are generated from that estimated surface rather than from raw point
-elevations.
+The smoothed grid is wrapped in a continuous `GroundModel`. `mu(x, y)` is the
+model's spline interpolation function, so elevation and mathematical gradient
+can be evaluated at arbitrary coordinates inside the map frame. The regular
+grid is the observation/support grid, not the public contour-generation data
+structure.
 
 ## Contours
 
-Contours use the point-cloud-derived ground grid. The implementation builds a
-2D elevation matrix and uses `contourpy` to generate isolines at the requested
-contour interval.
+Contours use the point-cloud-derived `GroundModel`. The implementation samples
+the continuous `mu(x, y)` surface on the model grid and uses `contourpy` to
+generate isolines at the requested contour interval. The sampled grid is used
+only as the numerical isoline extraction input; the source of truth for ground
+height is the continuous model.
 
 The intentional simplification is only in the mathematical ground model:
 multiple returns become one continuous estimated surface, empty cells are
 interpolated, and the surface is noise-weighted and smoothed before contour
 extraction. The generated contour geometry is taken directly from that
-estimated surface. No post-contour geometry smoothing, simplification, or
-fragment merging is applied. Every `--index-contour-every` contour is written as
-ISOM `102` index contour; the others are ISOM `101`.
+estimated surface. If numerical artifacts make a generated contour
+self-intersect, the crossing is noded and emitted as simple line parts instead
+of one invalid LineString. Closed contour rings enclosing less than 10 m2 are
+discarded as noise. Every `--index-contour-every` contour is written as ISOM
+`102` index contour; the others are ISOM `101`.
 
 ## Cliffs
 
-Cliffs use the same ground grid. The implementation estimates slope at each
-grid point from central height differences in x/y, converts slope to degrees,
-then contours the slope field at `--slope-threshold-deg`.
+Cliffs use the same `GroundModel`. The implementation evaluates the
+mathematical gradient of `mu(x, y)`, converts slope to degrees, then contours
+the slope field at `--slope-threshold-deg`.
 
 Segments shorter than `--min-cliff-length-m` are discarded and the remaining
 lines are written as candidate ISOM `202` cliffs. This is a candidate extractor:
 final passability, teeth, and cartographic displacement still need review.
+MML `jyrkanne` source cliffs are separate vector features; for those, full
+builds orient the line against the LiDAR ground model before rendering ISOM
+`201` tags so the tags point to the lower side.
 
 ## Vegetation
 

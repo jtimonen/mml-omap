@@ -32,8 +32,8 @@ def raster_plot_geometry(transform: Any, dpi: int) -> dict[str, int | float]:
 
 
 def raster_grid_shape(transform: Any) -> tuple[int, int]:
-    columns = max(1, int(math.ceil((transform.max_x - transform.min_x) / LIDAR_RASTER_CELL_SIZE_M)))
-    rows_count = max(1, int(math.ceil((transform.max_y - transform.min_y) / LIDAR_RASTER_CELL_SIZE_M)))
+    columns = max(1, int(math.ceil(transform.width_m / LIDAR_RASTER_CELL_SIZE_M)))
+    rows_count = max(1, int(math.ceil(transform.height_m / LIDAR_RASTER_CELL_SIZE_M)))
     return columns, rows_count
 
 
@@ -73,42 +73,39 @@ def raster_to_page_image(rgb: Any, transform: Any, metrics: dict[str, int | floa
     import numpy as np
 
     source = Image.fromarray(np.flipud(rgb).astype("uint8"), mode="RGB")
-    width = int(metrics["width"])
-    height = int(metrics["height"])
-    px_per_mm = float(metrics["px_per_mm"])
-    scale_m_per_px = transform.scale / (1000.0 * px_per_mm)
-    cell_size = LIDAR_RASTER_CELL_SIZE_M
-    cos_a = transform._cos_declination
-    sin_a = transform._sin_declination
-    left_m = transform.map_left_mm * transform.scale / 1000.0
-    top_m = transform.map_top_mm * transform.scale / 1000.0
-    page_to_source = (
-        cos_a * scale_m_per_px / cell_size,
-        -sin_a * scale_m_per_px / cell_size,
-        (
-            transform.center_x
-            - transform.min_x
-            + cos_a * (-left_m - transform.width_m / 2.0)
-            + sin_a * (transform.height_m / 2.0 + top_m)
-        )
-        / cell_size,
-        sin_a * scale_m_per_px / cell_size,
-        cos_a * scale_m_per_px / cell_size,
-        (
-            transform.max_y
-            - transform.center_y
-            - sin_a * (left_m + transform.width_m / 2.0)
-            - cos_a * (transform.height_m / 2.0 + top_m)
-        )
-        / cell_size,
+    page = Image.new("RGBA", (int(metrics["width"]), int(metrics["height"])), (255, 255, 255, 255))
+    resized = source.resize((int(metrics["plot_width"]), int(metrics["plot_height"])), resample=Image.Resampling.NEAREST)
+    page.paste(resized.convert("RGBA"), (int(metrics["plot_left"]), int(metrics["plot_top"])))
+    return page
+
+
+def points_to_raster_coordinates(points: Any, transform: Any) -> tuple[Any, Any, Any]:
+    import numpy as np
+
+    dx = points[:, 0] - transform.center_x
+    dy = points[:, 1] - transform.center_y
+    map_x = transform._cos_declination * dx - transform._sin_declination * dy + transform.width_m / 2.0
+    map_y = transform._sin_declination * dx + transform._cos_declination * dy + transform.height_m / 2.0
+    mask = (
+        np.isfinite(points[:, 0])
+        & np.isfinite(points[:, 1])
+        & (map_x >= 0.0)
+        & (map_x <= transform.width_m)
+        & (map_y >= 0.0)
+        & (map_y <= transform.height_m)
     )
-    return source.transform(
-        (width, height),
-        Image.Transform.AFFINE,
-        page_to_source,
-        resample=Image.Resampling.NEAREST,
-        fillcolor=(255, 255, 255),
-    ).convert("RGBA")
+    return map_x, map_y, mask
+
+
+def raster_cell_centers_world(transform: Any, columns: int, rows_count: int) -> tuple[Any, Any]:
+    import numpy as np
+
+    center_map_x = (np.arange(columns, dtype=float) + 0.5) * LIDAR_RASTER_CELL_SIZE_M - transform.width_m / 2.0
+    center_map_y = (np.arange(rows_count, dtype=float) + 0.5) * LIDAR_RASTER_CELL_SIZE_M - transform.height_m / 2.0
+    map_x_grid, map_y_grid = np.meshgrid(center_map_x, center_map_y)
+    world_x = transform.center_x + transform._cos_declination * map_x_grid + transform._sin_declination * map_y_grid
+    world_y = transform.center_y - transform._sin_declination * map_x_grid + transform._cos_declination * map_y_grid
+    return world_x, world_y
 
 
 def grid_array_from_xyz_grid(xs: list[float], ys: list[float], points: dict[tuple[float, float], float]) -> Any:
@@ -128,8 +125,9 @@ def nearest_grid_values_for_cells(
 ) -> Any:
     import numpy as np
 
-    center_x = transform.min_x + (np.arange(columns, dtype=float) + 0.5) * LIDAR_RASTER_CELL_SIZE_M
-    center_y = transform.min_y + (np.arange(rows_count, dtype=float) + 0.5) * LIDAR_RASTER_CELL_SIZE_M
+    center_x_grid, center_y_grid = raster_cell_centers_world(transform, columns, rows_count)
+    center_x = center_x_grid.reshape(-1)
+    center_y = center_y_grid.reshape(-1)
     xs_array = np.asarray(xs, dtype=float)
     ys_array = np.asarray(ys, dtype=float)
     x_indexes = np.searchsorted(xs_array, center_x)
@@ -146,7 +144,7 @@ def nearest_grid_values_for_cells(
         y_indexes - 1,
         y_indexes,
     )
-    return grid[np.ix_(y_indexes, x_indexes)]
+    return grid[y_indexes, x_indexes].reshape(rows_count, columns)
 
 
 def raster_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str, Any]:
@@ -166,31 +164,25 @@ def raster_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str, An
     point_count = np.zeros((rows_count, columns), dtype=np.uint16)
     ground_count = np.zeros((rows_count, columns), dtype=np.uint16)
     object_count_le5 = np.zeros((rows_count, columns), dtype=np.uint16)
-    min_object_height = np.full((rows_count, columns), np.nan, dtype=float)
     vegetation_height = np.full((rows_count, columns), np.nan, dtype=float)
     max_observed_z = np.full((rows_count, columns), -np.inf, dtype=float)
 
     rows_array = np.asarray(source_data["lidar_rows"], dtype=float)
     if rows_array.ndim != 2 or rows_array.shape[1] < 4:
         raise ValueError("Point rows must contain x, y, z, classification")
-    mask = (
-        np.isfinite(rows_array[:, 0])
-        & np.isfinite(rows_array[:, 1])
-        & np.isfinite(rows_array[:, 2])
-        & (rows_array[:, 0] >= transform.min_x)
-        & (rows_array[:, 0] <= transform.max_x)
-        & (rows_array[:, 1] >= transform.min_y)
-        & (rows_array[:, 1] <= transform.max_y)
-    )
+    map_x, map_y, frame_mask = points_to_raster_coordinates(rows_array, transform)
+    mask = frame_mask & np.isfinite(rows_array[:, 2])
     points = rows_array[mask]
     if len(points):
+        point_map_x = map_x[mask]
+        point_map_y = map_y[mask]
         column_indices = np.clip(
-            np.floor((points[:, 0] - transform.min_x) / LIDAR_RASTER_CELL_SIZE_M).astype(int),
+            np.floor(point_map_x / LIDAR_RASTER_CELL_SIZE_M).astype(int),
             0,
             columns - 1,
         )
         row_indices = np.clip(
-            np.floor((points[:, 1] - transform.min_y) / LIDAR_RASTER_CELL_SIZE_M).astype(int),
+            np.floor(point_map_y / LIDAR_RASTER_CELL_SIZE_M).astype(int),
             0,
             rows_count - 1,
         )
@@ -211,9 +203,6 @@ def raster_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str, An
         object_columns = column_indices[is_object]
         object_heights = heights[is_object]
         if len(object_heights):
-            min_seed = np.where(np.isnan(min_object_height), np.inf, min_object_height)
-            np.minimum.at(min_seed, (object_rows, object_columns), object_heights)
-            min_object_height[:] = np.where(np.isinf(min_seed), np.nan, min_seed)
             low_object = object_heights <= 5.0
             np.add.at(object_count_le5, (object_rows[low_object], object_columns[low_object]), 1)
         is_vegetation = np.asarray(
@@ -234,7 +223,6 @@ def raster_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str, An
         "point_count": point_count,
         "ground_count": ground_count,
         "object_count_le5": object_count_le5,
-        "min_object_height": min_object_height,
         "vegetation_height": vegetation_height,
     }
 
@@ -245,25 +233,20 @@ def median_height_surface(source_data: dict[str, Any], transform: Any) -> tuple[
     columns, rows_count = raster_grid_shape(transform)
     rows_array = np.asarray(source_data["lidar_rows"], dtype=float)
     values = np.full((rows_count, columns), np.nan, dtype=float)
-    mask = (
-        np.isfinite(rows_array[:, 0])
-        & np.isfinite(rows_array[:, 1])
-        & np.isfinite(rows_array[:, 2])
-        & (rows_array[:, 0] >= transform.min_x)
-        & (rows_array[:, 0] <= transform.max_x)
-        & (rows_array[:, 1] >= transform.min_y)
-        & (rows_array[:, 1] <= transform.max_y)
-    )
+    map_x, map_y, frame_mask = points_to_raster_coordinates(rows_array, transform)
+    mask = frame_mask & np.isfinite(rows_array[:, 2])
     points = rows_array[mask]
     if len(points) == 0:
         return values, 0, 0
+    point_map_x = map_x[mask]
+    point_map_y = map_y[mask]
     column_indices = np.clip(
-        np.floor((points[:, 0] - transform.min_x) / LIDAR_RASTER_CELL_SIZE_M).astype(int),
+        np.floor(point_map_x / LIDAR_RASTER_CELL_SIZE_M).astype(int),
         0,
         columns - 1,
     )
     row_indices = np.clip(
-        np.floor((points[:, 1] - transform.min_y) / LIDAR_RASTER_CELL_SIZE_M).astype(int),
+        np.floor(point_map_y / LIDAR_RASTER_CELL_SIZE_M).astype(int),
         0,
         rows_count - 1,
     )
@@ -290,18 +273,14 @@ def return_type_surface(source_data: dict[str, Any], transform: Any) -> tuple[An
     counts_by_cell = np.zeros((rows_count, columns, len(keys)), dtype=np.uint16)
     point_counts = {key: 0 for key in keys}
     rows_array = np.asarray(source_data["lidar_rows"], dtype=float)
-    mask = (
-        np.isfinite(rows_array[:, 0])
-        & np.isfinite(rows_array[:, 1])
-        & (rows_array[:, 0] >= transform.min_x)
-        & (rows_array[:, 0] <= transform.max_x)
-        & (rows_array[:, 1] >= transform.min_y)
-        & (rows_array[:, 1] <= transform.max_y)
-    )
+    map_x, map_y, frame_mask = points_to_raster_coordinates(rows_array, transform)
+    mask = frame_mask
     points = rows_array[mask]
-    for x_raw, y_raw, _z_raw, classification in points:
-        column = int(np.clip(math.floor((x_raw - transform.min_x) / LIDAR_RASTER_CELL_SIZE_M), 0, columns - 1))
-        row = int(np.clip(math.floor((y_raw - transform.min_y) / LIDAR_RASTER_CELL_SIZE_M), 0, rows_count - 1))
+    point_map_x = map_x[mask]
+    point_map_y = map_y[mask]
+    for x_raster, y_raster, (_x_raw, _y_raw, _z_raw, classification) in zip(point_map_x, point_map_y, points):
+        column = int(np.clip(math.floor(x_raster / LIDAR_RASTER_CELL_SIZE_M), 0, columns - 1))
+        row = int(np.clip(math.floor(y_raster / LIDAR_RASTER_CELL_SIZE_M), 0, rows_count - 1))
         return_type = lidar_return_type(int(classification) if np.isfinite(classification) else None)
         counts_by_cell[row, column, key_index[return_type]] += 1
         point_counts[return_type] += 1
@@ -316,7 +295,7 @@ def return_type_surface(source_data: dict[str, Any], transform: Any) -> tuple[An
     return rgb, point_counts, cell_type_counts
 
 
-def height_gradient_rgb(values: Any) -> tuple[Any, float, float]:
+def elevation_color_ramp_rgb(values: Any) -> tuple[Any, float, float]:
     import numpy as np
 
     finite = values[np.isfinite(values)]
@@ -536,7 +515,7 @@ def render_lidar_raster_pngs(source_data: dict[str, Any], output_base: Path, arg
 
     progress("Rendering LiDAR raster: median point height...")
     median_height, occupied_cells, point_count = median_height_surface(source_data, transform)
-    height_rgb, z_min, z_max = height_gradient_rgb(median_height)
+    height_rgb, z_min, z_max = elevation_color_ramp_rgb(median_height)
     reports["median_point_height"] = render_raster_png(
         height_rgb,
         raster_dir / f"{raster_stem}-median-point-height.png",
@@ -569,15 +548,15 @@ def render_lidar_raster_pngs(source_data: dict[str, Any], output_base: Path, arg
     reports["return_types"] = return_type_report
 
     for prefix, values in (("ground", surfaces["ground_height"]), ("surface", surfaces["surface_height"])):
-        progress(f"Rendering LiDAR rasters: {prefix} gradient, hillshade, and slope...")
-        gradient, z_min, z_max = height_gradient_rgb(values)
-        reports[f"{prefix}_gradient"] = render_raster_png(
-            gradient,
-            raster_dir / f"{raster_stem}-{prefix}-gradient.png",
+        progress(f"Rendering LiDAR rasters: {prefix} elevation, hillshade, and slope...")
+        elevation_rgb, z_min, z_max = elevation_color_ramp_rgb(values)
+        reports[f"{prefix}_elevation"] = render_raster_png(
+            elevation_rgb,
+            raster_dir / f"{raster_stem}-{prefix}-elevation.png",
             transform=transform,
             dpi=args.dpi,
-            title=f"{map_title(output_base, args.map_title)} LiDAR {prefix} height gradient",
-            legend=f"Height gradient {z_min:.1f}-{z_max:.1f} m, 1 m cells",
+            title=f"{map_title(output_base, args.map_title)} LiDAR {prefix} elevation",
+            legend=f"{prefix.title()} elevation {z_min:.1f}-{z_max:.1f} m, 1 m cells",
             map_maker=args.map_maker,
             color_scale=viridis_scale(z_min, z_max),
         )
@@ -615,21 +594,6 @@ def render_lidar_raster_pngs(source_data: dict[str, Any], output_base: Path, arg
         title=f"{map_title(output_base, args.map_title)} LiDAR ground coverage",
         legend="Blue: no point | yellow: no ground return | black: ground return present",
         map_maker=args.map_maker,
-    )
-
-    progress("Rendering LiDAR raster: minimum object height...")
-    min_object_rgb, min_object_max = grayscale_rgb(np.nan_to_num(surfaces["min_object_height"], nan=0.0), min_value=0.0, max_value=5.0)
-    min_object_rgb[np.isnan(surfaces["min_object_height"])] = (210, 30, 30)
-    reports["minimum_object_height"] = render_raster_png(
-        min_object_rgb,
-        raster_dir / f"{raster_stem}-minimum-object-height.png",
-        transform=transform,
-        dpi=args.dpi,
-        title=f"{map_title(output_base, args.map_title)} LiDAR minimum object height",
-        legend=f"Red: no object point | black-white: lowest object height above ground per 1 m x 1 m cell, 0-{min_object_max:.0f} m",
-        map_maker=args.map_maker,
-        color_scale=grayscale_scale("0 m", f"{min_object_max:.0f} m"),
-        swatches=[((210, 30, 30), "No object point")],
     )
 
     progress("Rendering LiDAR raster: object point count up to 5 m...")

@@ -97,14 +97,13 @@ The terrain report stores these files under the `lidar_rasters` key:
 
 | Output suffix | Meaning |
 | --- | --- |
-| `-ground-gradient.png` | Ground model height gradient. |
+| `-ground-elevation.png` | Ground model elevation colored by height in metres. |
 | `-ground-shading.png` | Analytical hillshade from the ground model. |
 | `-ground-slope.png` | Ground model slope; darker pixels are steeper. |
-| `-surface-gradient.png` | Surface height gradient from highest observed return over ground. |
+| `-surface-elevation.png` | Surface elevation from highest observed return over ground, colored by height in metres. |
 | `-surface-shading.png` | Analytical hillshade from the surface model. |
 | `-surface-slope.png` | Surface slope; darker pixels are steeper. |
 | `-ground-coverage.png` | Blue means no point, yellow means points but no ground return, black means ground return present. |
-| `-minimum-object-height.png` | Red means no object point; black to white encodes the lowest object height above ground in the 1 m cell. |
 | `-point-count-up-to-5m.png` | Brighter cells have more non-ground object points up to 5 m above ground. |
 | `-vegetation-height.png` | Maximum vegetation-candidate return height above ground. |
 

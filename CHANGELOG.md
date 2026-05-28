@@ -6,9 +6,8 @@
 - Replaced the old top-level LiDAR point PNGs with organized
   `lidar-rasters/` support images.
 - Added LaserScan-style LiDAR raster PNGs: median point height, dominant return
-  type per 1 m cell, ground and surface gradient/shading/slope views, ground
-  coverage, minimum object height, object point count up to 5 m, and vegetation
-  height.
+  type per 1 m cell, ground and surface elevation/shading/slope views, ground
+  coverage, object point count up to 5 m, and vegetation height.
 - Continuous LiDAR color rasters now include an in-image color-scale legend.
 - Terrain reports now include the new `lidar_rasters` report block.
 - Added `--reuse-downloads` for `build` and the built-in examples, with

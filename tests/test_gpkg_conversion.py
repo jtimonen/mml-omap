@@ -661,14 +661,13 @@ class OrienteeringBoundsTest(unittest.TestCase):
             reports = render_lidar_raster_pngs(source_data, output_base, args)
 
             expected = {
-                "ground_gradient",
+                "ground_elevation",
                 "ground_shading",
                 "ground_slope",
-                "surface_gradient",
+                "surface_elevation",
                 "surface_shading",
                 "surface_slope",
                 "ground_coverage",
-                "minimum_object_height",
                 "point_count_up_to_5m",
                 "vegetation_height",
                 "median_point_height",

@@ -160,6 +160,38 @@ class GeoPackageConversionTest(unittest.TestCase):
         self.assertEqual(feature["properties"]["iof_symbol_number"], "506")
         self.assertEqual(feature["properties"]["iof_symbol_name"], "Small footpath")
 
+    def test_tieviiva_12316_maps_to_vehicle_track(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            connection = sqlite3.connect(gpkg)
+            connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+            connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+            connection.execute("INSERT INTO gpkg_contents VALUES ('tieviiva', 'features')")
+            connection.execute("INSERT INTO gpkg_geometry_columns VALUES ('tieviiva', 'geom')")
+            connection.execute("CREATE TABLE tieviiva (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, geom BLOB)")
+            connection.execute(
+                "INSERT INTO tieviiva (kohdeluokka, geom) VALUES (?, ?)",
+                (12316, gpkg_linestring([(385396.0, 6672568.0), (385400.0, 6672572.0)])),
+            )
+            connection.commit()
+            connection.close()
+
+            geojson = convert_gpkg_to_geojson(
+                gpkg,
+                bbox=[385395, 6672567, 385401, 6672573],
+                table_rules=DEFAULT_TABLE_RULES,
+                include_unmapped=False,
+            )
+
+        self.assertEqual(len(geojson["features"]), 1)
+        feature = geojson["features"][0]
+        self.assertEqual(feature["properties"]["source_table"], "tieviiva")
+        self.assertEqual(feature["properties"]["kohdeluokka"], 12316)
+        self.assertEqual(feature["properties"]["symbol"], "504")
+        self.assertEqual(feature["properties"]["iof_symbol_number"], "504")
+        self.assertEqual(feature["properties"]["iof_symbol_name"], "Vehicle track")
+        self.assertEqual(cli.feature_style(feature)["stroke_width_mm"], 0.35)
+
     def test_jyrkanne_34400_maps_to_impassable_cliff(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             gpkg = Path(directory) / "sample.gpkg"

@@ -33,6 +33,8 @@
   LiDAR ground model so tags point downhill in full builds.
 - Corrected ISOM `504` Vehicle track to 0.35 mm and `505` Footpath to 0.25 mm
   in the built-in renderer symbol library.
+- Corrected `tieviiva.kohdeluokka=12316` conversion to emit ISOM `504`
+  Vehicle track instead of the thinner small-footpath symbol.
 - Mapped MML `kivi` to ISOM `205` Large boulder and added a conservative
   `kivikko` to ISOM `208` Boulder field mapping.
 - Shifted the Kotka-Jukola example north and the Vuokatinvaara example south.

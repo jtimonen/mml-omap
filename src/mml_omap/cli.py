@@ -98,7 +98,7 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
             "12313": "path",
             "12314": "road",
             "12315": "small_path",
-            "12316": "small_path",
+            "12316": "small_road",
             "12317": "small_path",
         },
     },

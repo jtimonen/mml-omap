@@ -133,7 +133,8 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "lentokentankiitotie": {"object_type": "area", "symbol": "field"},
     "kallioalue": {"object_type": "area", "symbol": "open_rock"},
     "rakennus": {"object_type": "area", "symbol": "building"},
-    "kivi": {"object_type": "point", "symbol": "mapped_rock"},
+    "kivi": {"object_type": "point", "symbol": "large_boulder"},
+    "kivikko": {"object_type": "area", "symbol": "boulder_field"},
     "paikannimi": {
         "object_type": "point",
         "symbol": "place_label",
@@ -149,8 +150,6 @@ DEFAULT_NORTH_LINE_SPACING_M = 300.0
 DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
 MML_LASER_MAP_SHEET_GRID_M = 3000.0
 DEFAULT_MML_JOB_ATTEMPTS = 3
-MML_LINE_DIAGNOSTIC_WATER_TABLES = {"virtavesikapea"}
-MML_LINE_DIAGNOSTIC_ROAD_TABLES = {"tieviiva"}
 MML_LINE_DIAGNOSTIC_CONTOUR_TABLES = {"korkeuskayra", "korkeuskäyrä", "korkeuskayra_2m", "korkeuskäyrä_2m"}
 
 def read_json(path: Path) -> Any:
@@ -2199,7 +2198,7 @@ def should_render_point_symbol(feature: dict[str, Any]) -> bool:
     object_type = properties.get("object_type")
     if object_type is not None and object_type != "point":
         return False
-    return feature_symbol(feature) in {"mapped_rock"} or object_type == "point"
+    return feature_symbol(feature) in {"mapped_rock", "large_boulder"} or object_type == "point"
 
 
 def feature_render_order(feature: dict[str, Any]) -> int:
@@ -2568,12 +2567,20 @@ def render_svg(
     progress(f"Wrote SVG to {output_path}.")
 
 
-def mml_line_diagnostic_color(source_table: str) -> str:
-    if source_table in MML_LINE_DIAGNOSTIC_WATER_TABLES:
-        return "#0066cc"
-    if source_table in MML_LINE_DIAGNOSTIC_ROAD_TABLES:
-        return "#000000"
-    return "#cc0000"
+def mml_line_diagnostic_color_for_symbol(symbol: str | None, mapped: bool) -> tuple[int, int, int]:
+    if not mapped:
+        return (204, 0, 0)
+    metadata = iof_symbol_metadata(symbol)
+    number = str(metadata.get("iof_symbol_number") or "")
+    if number.startswith("1"):
+        return (155, 90, 40)
+    if number.startswith("3"):
+        return (0, 102, 204)
+    if number.startswith("4"):
+        return (0, 128, 0)
+    if number.startswith(("2", "5")):
+        return (0, 0, 0)
+    return (120, 120, 120)
 
 
 def is_mml_contour_table(table: str) -> bool:
@@ -2607,11 +2614,13 @@ def line_midpoint_coordinate(coordinates: list[list[float]]) -> list[float] | No
     return [float(coordinates[-1][0]), float(coordinates[-1][1])]
 
 
-def mml_line_diagnostic_features_from_gpkg(
+def mml_diagnostic_features_from_gpkg(
     gpkg_path: Path,
     *,
     bbox: list[float],
     clip_frame: OrientedFrame,
+    table_rules: dict[str, dict[str, Any]],
+    geometry_types: set[str],
 ) -> list[dict[str, Any]]:
     features: list[dict[str, Any]] = []
     with sqlite3.connect(gpkg_path) as connection:
@@ -2619,17 +2628,28 @@ def mml_line_diagnostic_features_from_gpkg(
         for table, geometry_column in gpkg_feature_tables(connection):
             if is_mml_contour_table(table):
                 continue
+            rule = table_rules.get(table)
             for row in feature_rows(connection, table, geometry_column):
                 geometry = parse_gpkg_geometry(row[geometry_column])
-                if geometry is None or geometry["type"] not in {"LineString", "MultiLineString"}:
+                if geometry is None or geometry["type"] not in geometry_types:
                     continue
                 if not geometry_intersects_bbox(geometry, bbox):
                     continue
                 geometry = clip_geometry_to_frame(geometry, clip_frame)
-                if geometry is None or geometry.get("type") not in {"LineString", "MultiLineString"}:
+                if geometry is None or geometry.get("type") not in geometry_types:
                     continue
                 properties = row_properties(row, geometry_column)
+                object_type, symbol = classify_feature(table, properties, geometry, rule)
+                metadata = iof_symbol_metadata(symbol)
                 properties["source_table"] = table
+                properties["object_type"] = object_type or "line"
+                properties["diagnostic_symbol"] = metadata.get("iof_symbol_number")
+                properties["diagnostic_symbol_name"] = metadata.get("iof_symbol_name")
+                properties["diagnostic_mapped"] = bool(symbol and metadata.get("iof_symbol_number"))
+                properties["diagnostic_color"] = mml_line_diagnostic_color_for_symbol(
+                    symbol,
+                    bool(properties["diagnostic_mapped"]),
+                )
                 features.append({"type": "Feature", "properties": properties, "geometry": geometry})
     return features
 
@@ -2693,7 +2713,7 @@ def orient_mml_cliff_lines_downhill(geojson: dict[str, Any], ground_model: Groun
             geometry["coordinates"] = oriented
 
 
-def render_mml_line_diagnostic_svg(
+def render_mml_line_diagnostic_pdf(
     gpkg_path: Path,
     output_path: Path,
     *,
@@ -2705,82 +2725,173 @@ def render_mml_line_diagnostic_svg(
     north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
 ) -> dict[str, Any]:
     clip_frame = OrientedFrame(bbox, magnetic_declination_deg)
-    features = mml_line_diagnostic_features_from_gpkg(gpkg_path, bbox=enclosing_grid_bbox(bbox, magnetic_declination_deg), clip_frame=clip_frame)
-    progress(f"Rendering MML line diagnostic SVG with {len(features)} GeoPackage line features...")
-    lines = [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        (
-            f'<svg xmlns="http://www.w3.org/2000/svg" '
-            f'width="{transform.page_width_mm:.3f}mm" height="{transform.page_height_mm:.3f}mm" '
-            f'viewBox="0 0 {transform.page_width_mm:.3f} {transform.page_height_mm:.3f}">'
-        ),
-        '<rect x="0" y="0" width="100%" height="100%" fill="#ffffff"/>',
-    ]
+    features = mml_diagnostic_features_from_gpkg(
+        gpkg_path,
+        bbox=enclosing_grid_bbox(bbox, magnetic_declination_deg),
+        clip_frame=clip_frame,
+        table_rules=DEFAULT_TABLE_RULES,
+        geometry_types={"LineString", "MultiLineString"},
+    )
+    progress(f"Rendering MML line diagnostic PDF with {len(features)} GeoPackage line features...")
+    page_width = transform.page_width_mm * 72.0 / 25.4
+    page_height = transform.page_height_mm * 72.0 / 25.4
+    commands = ["1 1 1 rg", f"0 0 {page_width:.3f} {page_height:.3f} re", "f"]
     rendered_parts = 0
     for feature in features:
         properties = feature.get("properties") or {}
-        source_table = str(properties.get("source_table", ""))
-        color = mml_line_diagnostic_color(source_table)
-        kohdeluokka = html.escape(str(properties.get("kohdeluokka", "")))
+        color = tuple(properties.get("diagnostic_color") or (204, 0, 0))
+        kohdeluokka = str(properties.get("kohdeluokka", ""))
+        commands.append(pdf_color_operator(color, stroke=True))
+        commands.append(f"{0.18 * 72.0 / 25.4:.3f} w")
+        commands.append("[] 0 d")
         for part in iter_geometry_parts(feature.get("geometry") or {}):
             if part["type"] != "LineString":
                 continue
             coordinates = part.get("coordinates") or []
             if len(coordinates) < 2:
                 continue
-            path = svg_path_for_line(coordinates, transform)
-            lines.append(
-                f'<path d="{path}" stroke="{color}" fill="none" '
-                f'stroke-width="0.180" stroke-linecap="round" stroke-linejoin="round"/>'
-            )
+            x, y = pdf_point(transform, coordinates[0])
+            commands.append(f"{x:.3f} {y:.3f} m")
+            for coordinate in coordinates[1:]:
+                x, y = pdf_point(transform, coordinate)
+                commands.append(f"{x:.3f} {y:.3f} l")
+            commands.append("S")
             midpoint = line_midpoint_coordinate(coordinates)
             if midpoint is not None and kohdeluokka:
                 x, y = transform.to_mm(midpoint)
-                lines.append(
-                    f'<text x="{x + 0.9:.3f}" y="{y - 0.9:.3f}" '
-                    f'font-family="Arial, Helvetica, sans-serif" font-size="2.100" '
-                    f'fill="{color}" paint-order="stroke" stroke="#ffffff" '
-                    f'stroke-width="0.450">{kohdeluokka}</text>'
-                )
+                commands.append(pdf_color_operator((255, 255, 255), stroke=False))
+                append_pdf_text(commands, x + 0.9, y - 0.9, 7.0, kohdeluokka, transform)
+                commands.append(pdf_color_operator(color, stroke=False))
+                append_pdf_text(commands, x + 0.9, y - 0.9, 6.0, kohdeluokka, transform)
             rendered_parts += 1
+    commands.append(pdf_color_operator((221, 221, 221), stroke=True))
+    commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
     for x in north_line_x_positions(transform, north_line_spacing_m):
-        lines.append(
-            f'<line x1="{x:.3f}" y1="{transform.map_top_mm:.3f}" '
-            f'x2="{x:.3f}" y2="{transform.map_top_mm + transform.map_height_mm:.3f}" '
-            f'stroke="#dddddd" stroke-width="0.120"/>'
-        )
-    lines.append(
-        f'<rect x="{transform.map_left_mm:.3f}" y="{transform.map_top_mm:.3f}" '
-        f'width="{transform.map_width_mm:.3f}" height="{transform.map_height_mm:.3f}" '
-        f'fill="none" stroke="#000000" stroke-width="0.120"/>'
+        x0, y0 = pdf_mm(x, transform.map_top_mm, transform)
+        x1, y1 = pdf_mm(x, transform.map_top_mm + transform.map_height_mm, transform)
+        commands.append(f"{x0:.3f} {y0:.3f} m")
+        commands.append(f"{x1:.3f} {y1:.3f} l")
+        commands.append("S")
+    commands.append("0 0 0 RG")
+    commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
+    x, y = pdf_mm(transform.map_left_mm, transform.map_top_mm + transform.map_height_mm, transform)
+    commands.append(
+        f"{x:.3f} {y:.3f} {transform.map_width_mm * 72.0 / 25.4:.3f} "
+        f"{transform.map_height_mm * 72.0 / 25.4:.3f} re"
     )
-    title = html.escape(f"{map_title(output_path, map_title_text)} MML line diagnostic")
-    footer = html.escape(f"mml-omap {__version__} | MML GeoPackage line objects | {map_maker}")
-    lines.append(
-        f'<text x="{transform.map_left_mm:.3f}" y="{max(transform.map_top_mm - 1.2, 3.0):.3f}" '
-        f'font-family="Arial, Helvetica, sans-serif" font-size="3.2" fill="#000000">{title}</text>'
-    )
-    lines.append(
-        f'<text x="{transform.map_left_mm:.3f}" y="{transform.page_height_mm - 1.5:.3f}" '
-        f'font-family="Arial, Helvetica, sans-serif" font-size="2.6" fill="#000000">{footer}</text>'
-    )
-    lines.append(
-        f'<text x="{transform.map_left_mm:.3f}" y="{transform.map_top_mm + transform.map_height_mm + 3.2:.3f}" '
-        f'font-family="Arial, Helvetica, sans-serif" font-size="2.4" fill="#000000">'
-        f'<tspan fill="#0066cc">water</tspan> / <tspan fill="#000000">roads</tspan> / '
-        f'<tspan fill="#cc0000">other line objects</tspan></text>'
-    )
-    lines.append("</svg>")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    progress(f"Wrote MML line diagnostic SVG to {output_path}.")
+    commands.append("S")
+    commands.append("0 0 0 rg")
+    append_pdf_text(commands, transform.map_left_mm, max(transform.map_top_mm - 1.2, 3.0), 9.0, f"{map_title(output_path, map_title_text)} MML line diagnostic", transform)
+    append_pdf_text(commands, transform.map_left_mm, transform.page_height_mm - 1.5, 7.5, f"mml-omap {__version__} | MML GeoPackage line objects | {map_maker}", transform)
+    append_pdf_text(commands, transform.map_left_mm, transform.map_top_mm + transform.map_height_mm + 3.2, 6.8, "mapped: black/brown/green/gray/blue | unmapped: red | labels: kohdeluokka", transform)
+    write_pdf_page(output_path, page_width, page_height, commands)
+    progress(f"Wrote MML line diagnostic PDF to {output_path}.")
     return {
         "path": str(output_path),
-        "format": "svg",
+        "format": "pdf",
         "feature_count": len(features),
         "line_part_count": rendered_parts,
         "label": "kohdeluokka",
-        "colors": {"water": "#0066cc", "road": "#000000", "other": "#cc0000"},
+        "colors": {
+            "unmapped": "#cc0000",
+            "black": "#000000",
+            "brown": "#9b5a28",
+            "green": "#008000",
+            "gray": "#787878",
+            "blue": "#0066cc",
+        },
+    }
+
+
+def polygon_label_coordinate(part: dict[str, Any]) -> list[float] | None:
+    coordinates = part.get("coordinates") or []
+    if not coordinates or not coordinates[0]:
+        return None
+    xs = [float(point[0]) for point in coordinates[0]]
+    ys = [float(point[1]) for point in coordinates[0]]
+    return [(min(xs) + max(xs)) * 0.5, (min(ys) + max(ys)) * 0.5]
+
+
+def render_mml_area_diagnostic_pdf(
+    gpkg_path: Path,
+    output_path: Path,
+    *,
+    transform: RenderTransform,
+    bbox: list[float],
+    magnetic_declination_deg: float,
+    map_title_text: str | None,
+    map_maker: str,
+    north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+) -> dict[str, Any]:
+    clip_frame = OrientedFrame(bbox, magnetic_declination_deg)
+    features = mml_diagnostic_features_from_gpkg(
+        gpkg_path,
+        bbox=enclosing_grid_bbox(bbox, magnetic_declination_deg),
+        clip_frame=clip_frame,
+        table_rules=DEFAULT_TABLE_RULES,
+        geometry_types={"Polygon", "MultiPolygon"},
+    )
+    progress(f"Rendering MML area diagnostic PDF with {len(features)} GeoPackage area features...")
+    page_width = transform.page_width_mm * 72.0 / 25.4
+    page_height = transform.page_height_mm * 72.0 / 25.4
+    commands = ["1 1 1 rg", f"0 0 {page_width:.3f} {page_height:.3f} re", "f"]
+    rendered_parts = 0
+    for feature in features:
+        properties = feature.get("properties") or {}
+        color = tuple(properties.get("diagnostic_color") or (204, 0, 0))
+        kohdeluokka = str(properties.get("kohdeluokka", ""))
+        commands.append(pdf_color_operator(color, stroke=True))
+        commands.append(f"{0.18 * 72.0 / 25.4:.3f} w")
+        commands.append("[] 0 d")
+        for part in iter_geometry_parts(feature.get("geometry") or {}):
+            if part["type"] != "Polygon":
+                continue
+            append_pdf_polygon_path(commands, part, transform)
+            commands.append("S")
+            label_coordinate = polygon_label_coordinate(part)
+            if label_coordinate is not None and kohdeluokka:
+                x, y = transform.to_mm(label_coordinate)
+                commands.append(pdf_color_operator((255, 255, 255), stroke=False))
+                append_pdf_text(commands, x + 0.9, y - 0.9, 7.0, kohdeluokka, transform)
+                commands.append(pdf_color_operator(color, stroke=False))
+                append_pdf_text(commands, x + 0.9, y - 0.9, 6.0, kohdeluokka, transform)
+            rendered_parts += 1
+    commands.append(pdf_color_operator((221, 221, 221), stroke=True))
+    commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
+    for x in north_line_x_positions(transform, north_line_spacing_m):
+        x0, y0 = pdf_mm(x, transform.map_top_mm, transform)
+        x1, y1 = pdf_mm(x, transform.map_top_mm + transform.map_height_mm, transform)
+        commands.append(f"{x0:.3f} {y0:.3f} m")
+        commands.append(f"{x1:.3f} {y1:.3f} l")
+        commands.append("S")
+    commands.append("0 0 0 RG")
+    commands.append(f"{0.12 * 72.0 / 25.4:.3f} w")
+    x, y = pdf_mm(transform.map_left_mm, transform.map_top_mm + transform.map_height_mm, transform)
+    commands.append(
+        f"{x:.3f} {y:.3f} {transform.map_width_mm * 72.0 / 25.4:.3f} "
+        f"{transform.map_height_mm * 72.0 / 25.4:.3f} re"
+    )
+    commands.append("S")
+    commands.append("0 0 0 rg")
+    append_pdf_text(commands, transform.map_left_mm, max(transform.map_top_mm - 1.2, 3.0), 9.0, f"{map_title(output_path, map_title_text)} MML area diagnostic", transform)
+    append_pdf_text(commands, transform.map_left_mm, transform.page_height_mm - 1.5, 7.5, f"mml-omap {__version__} | MML GeoPackage area objects | {map_maker}", transform)
+    append_pdf_text(commands, transform.map_left_mm, transform.map_top_mm + transform.map_height_mm + 3.2, 6.8, "mapped: black/brown/green/gray/blue | unmapped: red | labels: kohdeluokka", transform)
+    write_pdf_page(output_path, page_width, page_height, commands)
+    progress(f"Wrote MML area diagnostic PDF to {output_path}.")
+    return {
+        "path": str(output_path),
+        "format": "pdf",
+        "feature_count": len(features),
+        "area_part_count": rendered_parts,
+        "label": "kohdeluokka",
+        "colors": {
+            "unmapped": "#cc0000",
+            "black": "#000000",
+            "brown": "#9b5a28",
+            "green": "#008000",
+            "gray": "#787878",
+            "blue": "#0066cc",
+        },
     }
 
 
@@ -3536,6 +3647,41 @@ def append_pdf_layout(
     append_pdf_text(commands, transform.map_left_mm + transform.map_width_mm - 4.0, max(transform.map_top_mm - 1.0, 4.5), 9.0, "N", transform)
 
 
+def write_pdf_page(output_path: Path, page_width: float, page_height: float, commands: list[str]) -> None:
+    content = ("\n".join(commands) + "\n").encode("latin-1", "replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.3f} {page_height:.3f}] "
+            f"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+            f"/Encoding /WinAnsiEncoding >> >> >> "
+            f"/Contents 4 0 R >>"
+        ).encode("ascii"),
+        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"endstream",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output.extend(f"{index} 0 obj\n".encode("ascii"))
+        output.extend(obj)
+        output.extend(b"\nendobj\n")
+    xref_offset = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    output.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(bytes(output))
+
+
 def render_pdf(
     geojson: dict[str, Any],
     output_path: Path,
@@ -3628,38 +3774,7 @@ def render_pdf(
         )
     if include_symbol_numbers:
         append_pdf_symbol_number_labels(commands, features, transform)
-    content = ("\n".join(commands) + "\n").encode("latin-1", "replace")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        (
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.3f} {page_height:.3f}] "
-            f"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
-            f"/Encoding /WinAnsiEncoding >> >> >> "
-            f"/Contents 4 0 R >>"
-        ).encode("ascii"),
-        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"endstream",
-    ]
-    output = bytearray(b"%PDF-1.4\n")
-    offsets = [0]
-    for index, obj in enumerate(objects, start=1):
-        offsets.append(len(output))
-        output.extend(f"{index} 0 obj\n".encode("ascii"))
-        output.extend(obj)
-        output.extend(b"\nendobj\n")
-    xref_offset = len(output)
-    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
-    output.extend(b"0000000000 65535 f \n")
-    for offset in offsets[1:]:
-        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
-    output.extend(
-        (
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-            f"startxref\n{xref_offset}\n%%EOF\n"
-        ).encode("ascii")
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(bytes(output))
+    write_pdf_page(output_path, page_width, page_height, commands)
     progress(f"Wrote PDF to {output_path}.")
 
 
@@ -3798,7 +3913,7 @@ def command_mml_line_diagnostic(args: argparse.Namespace) -> int:
         margin_mm=args.margin_mm,
         magnetic_declination_deg=magnetic_declination_deg,
     )
-    report = render_mml_line_diagnostic_svg(
+    report = render_mml_line_diagnostic_pdf(
         gpkg_path,
         Path(args.output),
         transform=transform,
@@ -3809,6 +3924,38 @@ def command_mml_line_diagnostic(args: argparse.Namespace) -> int:
         north_line_spacing_m=args.north_line_spacing_m,
     )
     print(f"Wrote {report['line_part_count']} MML line parts to {report['path']}.")
+    return 0
+
+
+def command_mml_area_diagnostic(args: argparse.Namespace) -> int:
+    input_path = Path(args.input)
+    if input_path.suffix.lower() != ".zip":
+        raise ValueError("mml-area-diagnostic input must be a downloaded MML .zip file")
+    gpkg_path = extract_first_gpkg(input_path, input_path.with_suffix(""))
+    bbox = parse_orienteering_bbox(args.bbox)
+    magnetic_date = parse_date(args.magnetic_date)
+    magnetic_declination_deg = resolve_magnetic_declination_deg(
+        args.magnetic_declination_deg,
+        bbox=bbox,
+        magnetic_date=magnetic_date.isoformat(),
+    )
+    transform = RenderTransform(
+        bbox,
+        scale=args.scale,
+        margin_mm=args.margin_mm,
+        magnetic_declination_deg=magnetic_declination_deg,
+    )
+    report = render_mml_area_diagnostic_pdf(
+        gpkg_path,
+        Path(args.output),
+        transform=transform,
+        bbox=bbox,
+        magnetic_declination_deg=magnetic_declination_deg,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        north_line_spacing_m=args.north_line_spacing_m,
+    )
+    print(f"Wrote {report['area_part_count']} MML area parts to {report['path']}.")
     return 0
 
 
@@ -4024,6 +4171,10 @@ def build_combined_map(args: argparse.Namespace) -> tuple[dict[str, Any], dict[s
 def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
     source_data = build_source_data(args)
+    progress("Rendering MML line-symbol diagnostic PDF...")
+    ensure_mml_line_diagnostic_report(source_data, output_base, args)
+    progress("Rendering MML area-symbol diagnostic PDF...")
+    ensure_mml_area_diagnostic_report(source_data, output_base, args)
     progress("Generating LiDAR raster support images...")
     ensure_lidar_raster_reports(source_data, output_base, args)
     progress("Generating combined vector map features...")
@@ -4059,9 +4210,9 @@ def ensure_mml_line_diagnostic_report(source_data: dict[str, Any], output_base: 
             args.margin_mm,
             magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
         )
-        existing = render_mml_line_diagnostic_svg(
+        existing = render_mml_line_diagnostic_pdf(
             Path(source_data["gpkg_path"]),
-            output_base.with_name(output_base.name + "-mml-lines").with_suffix(".svg"),
+            output_base.with_name(output_base.name + "-mml-lines").with_suffix(".pdf"),
             transform=transform,
             bbox=source_data["bbox"],
             magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
@@ -4071,6 +4222,29 @@ def ensure_mml_line_diagnostic_report(source_data: dict[str, Any], output_base: 
         )
         source_data["mml_line_diagnostic"] = existing
     return {"mml_line_diagnostic": existing}
+
+
+def ensure_mml_area_diagnostic_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    existing = source_data.get("mml_area_diagnostic")
+    if not isinstance(existing, dict):
+        transform = RenderTransform(
+            source_data["bbox"],
+            args.scale,
+            args.margin_mm,
+            magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
+        )
+        existing = render_mml_area_diagnostic_pdf(
+            Path(source_data["gpkg_path"]),
+            output_base.with_name(output_base.name + "-mml-areas").with_suffix(".pdf"),
+            transform=transform,
+            bbox=source_data["bbox"],
+            magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
+            map_title_text=args.map_title,
+            map_maker=args.map_maker,
+            north_line_spacing_m=args.north_line_spacing_m,
+        )
+        source_data["mml_area_diagnostic"] = existing
+    return {"mml_area_diagnostic": existing}
 
 
 def render_build_outputs(
@@ -4083,12 +4257,13 @@ def render_build_outputs(
 ) -> None:
     geojson_path = output_base.with_suffix(".geojson")
     write_json(geojson_path, combined)
+    report.update(ensure_mml_line_diagnostic_report(source_data, output_base, args))
+    report.update(ensure_mml_area_diagnostic_report(source_data, output_base, args))
     report.update(ensure_lidar_raster_reports(
         source_data,
         render_output_base(source_data["raster_output"]),
         args,
     ))
-    report.update(ensure_mml_line_diagnostic_report(source_data, output_base, args))
     write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
     transform = make_render_transform(
         argparse.Namespace(
@@ -4732,7 +4907,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     line_diagnostic = subparsers.add_parser(
         "mml-line-diagnostic",
-        help="Render a vector SVG diagnostic of raw MML GeoPackage line objects labelled by kohdeluokka.",
+        help="Render a PDF diagnostic of raw MML GeoPackage line objects labelled by kohdeluokka.",
     )
     line_diagnostic.add_argument("input", help="Existing downloaded MML zip.")
     line_diagnostic.add_argument("output", help="Output SVG path.")
@@ -4749,6 +4924,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     line_diagnostic.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
     line_diagnostic.set_defaults(func=command_mml_line_diagnostic)
+
+    area_diagnostic = subparsers.add_parser(
+        "mml-area-diagnostic",
+        help="Render a PDF diagnostic of raw MML GeoPackage area objects labelled by kohdeluokka.",
+    )
+    area_diagnostic.add_argument("input", help="Existing downloaded MML zip.")
+    area_diagnostic.add_argument("output", help="Output PDF path.")
+    area_diagnostic.add_argument("--bbox", required=True, help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
+    area_diagnostic.add_argument("--scale", type=int, default=5000)
+    area_diagnostic.add_argument("--margin-mm", type=float, default=5.0)
+    area_diagnostic.add_argument("--map-title", help="Title text printed in PDF layout metadata.")
+    area_diagnostic.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in PDF layout metadata.")
+    area_diagnostic.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
+    area_diagnostic.add_argument(
+        "--magnetic-declination-deg",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK.",
+    )
+    area_diagnostic.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
+    area_diagnostic.set_defaults(func=command_mml_area_diagnostic)
 
     generate = subparsers.add_parser(
         "generate",

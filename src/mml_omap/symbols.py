@@ -82,6 +82,20 @@ ISOM_SYMBOL_LIBRARY: dict[str, dict[str, Any]] = {
         "render_order": 600,
         "style": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#000000", "point_radius_mm": 0.20},
     },
+    "large_boulder": {
+        "iof_symbol_number": "205",
+        "iof_symbol_name": "Large boulder",
+        "geometry": "point",
+        "render_order": 605,
+        "style": {"stroke": "#000000", "stroke_width_mm": 0.10, "fill": "#000000", "point_radius_mm": 0.30},
+    },
+    "boulder_field": {
+        "iof_symbol_number": "208",
+        "iof_symbol_name": "Boulder field",
+        "geometry": "area",
+        "render_order": 190,
+        "style": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none"},
+    },
     "open_rock": {
         "iof_symbol_number": "214",
         "iof_symbol_name": "Bare rock",

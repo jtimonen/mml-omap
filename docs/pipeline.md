@@ -76,20 +76,22 @@ map.
 
 ## MML Line Diagnostic
 
-Builds also write `*-mml-lines.svg`, a vector diagnostic rendered directly from
-the downloaded MML GeoPackage. It does not use the symbolized GeoJSON
-conversion, so it can show raw line objects before table and symbol mapping.
-The diagnostic uses the same page size, scale, margin, bbox, clipping, and
-magnetic-north rotation as the normal map. Each retained GeoPackage line object
-is drawn with its `kohdeluokka` label near the line midpoint. Water line tables
-are blue, road line tables are black, and other line tables are red. MML contour
-tables are excluded.
+Builds also write `*-mml-lines.pdf` and `*-mml-areas.pdf`, vector diagnostics
+rendered directly from the downloaded MML GeoPackage. They do not use the
+symbolized GeoJSON conversion, so they can show raw objects before table and
+symbol mapping. The diagnostics use the same page size, scale, margin, bbox,
+clipping, and magnetic-north rotation as the normal map. Each retained
+GeoPackage object is drawn with its `kohdeluokka` label. Red means the object
+does not currently map to an ISOM symbol and will not be emitted into the
+orienteering map; mapped objects use black, brown, green, gray, or blue category
+colors. MML contour tables are excluded.
 
 The same renderer is available as a standalone command for already downloaded
 MML zip files:
 
 ```sh
-uv run mml-omap mml-line-diagnostic source.zip output.svg --bbox min_x,min_y,max_x,max_y
+uv run mml-omap mml-line-diagnostic source.zip output.pdf --bbox min_x,min_y,max_x,max_y
+uv run mml-omap mml-area-diagnostic source.zip output.pdf --bbox min_x,min_y,max_x,max_y
 ```
 
 `*-median-point-height.png` colors each occupied 1 m x 1 m cell by the median

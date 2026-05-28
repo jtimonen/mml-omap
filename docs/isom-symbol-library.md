@@ -68,3 +68,7 @@ the LiDAR ground model so the tags point to the lower side of the terrain.
 Road and path line widths follow the ISOM minimum graphical widths used by the
 built-in symbol library: `503` Road and `504` Vehicle track are 0.35 mm, `505`
 Footpath is 0.25 mm, and `506` Small footpath is 0.18 mm.
+
+MML `kivi` is rendered as ISOM `205` Large boulder because the MML
+Maastotietokohteet reference defines it as a prominent large boulder class, not
+as an ordinary boulder.

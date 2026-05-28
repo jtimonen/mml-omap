@@ -64,7 +64,7 @@ Do not commit `.env`.
 ## Examples
 
 Built-in 1:10000 examples write map outputs, terrain reports, LiDAR rasters,
-an MML line diagnostic SVG, and downloaded source data under
+MML line/area diagnostic PDFs, and downloaded source data under
 `builds/examples/<name>/`.
 
 | Command | Area | EPSG:3067 bbox |
@@ -87,10 +87,11 @@ Remove generated build artifacts while keeping downloaded source files:
 bash tools/clean-builds.sh
 ```
 
-Render only the MML line diagnostic from an existing downloaded MML zip:
+Render only the MML line or area diagnostic from an existing downloaded MML zip:
 
 ```sh
-uv run mml-omap mml-line-diagnostic path/to/source.zip builds/mml-lines.svg --bbox 371255,6673869,373305,6675299 --scale 10000
+uv run mml-omap mml-line-diagnostic path/to/source.zip builds/mml-lines.pdf --bbox 371255,6673869,373305,6675299 --scale 10000
+uv run mml-omap mml-area-diagnostic path/to/source.zip builds/mml-areas.pdf --bbox 371255,6673869,373305,6675299 --scale 10000
 ```
 
 ## What It Generates
@@ -99,9 +100,9 @@ The build output combines:
 
 - MML vector objects: paths, roads, water, marshes, open-land proxies,
   buildings, fences, rocks, MML cliff vectors, and other mapped features.
-- MML line diagnostic SVG: raw GeoPackage line objects in the same page frame
-  as the map, labelled with `kohdeluokka`; water is blue, roads are black, and
-  other line objects are red.
+- MML line and area diagnostic PDFs: raw GeoPackage objects in the same page
+  frame as the map, labelled with `kohdeluokka`; red marks objects not
+  currently mapped into the orienteering map.
 - Point-cloud contours: generated from a continuous ground grid built from
   classified LAZ ground points.
 - Point-cloud cliff candidates: generated from steep slope bands in the same

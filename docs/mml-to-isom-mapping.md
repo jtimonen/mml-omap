@@ -19,6 +19,7 @@ locally.
 Primary references:
 
 - MML Maastotietokanta product description and GeoPackage source data.
+- MML Maastotietokohteet 2025 reference in `reference/`.
 - IOF ISOM 2017-2 / O-Map Wiki symbol definitions.
 - Karttapullautin vectorconf practice, as documented by Orienteering BC.
 
@@ -43,7 +44,8 @@ Features without an ISOM symbol assignment are skipped by default. With
 | `jyrkanne` | `34400` | `201` | Impassable cliff | MML cliff class mapped as impassable cliff. |
 | `jyrkanne` | other mapped values | `202` | Cliff | Default MML cliff line where passability is not inferred. |
 | `kallioalue` | all | `214` | Bare rock | MML rock area. This is a source-data proxy, not field-checked bare rock. |
-| `kivi` | all | `204` | Boulder | MML point rock. Size classes are not inferred yet. |
+| `kivi` | all | `205` | Large boulder | MML `Kivi` is a prominent large boulder class, not a generic small boulder. |
+| `kivikko` | all | `208` | Boulder field | MML boulder/rock field area when present as a GeoPackage table. |
 | `jarvi` | all | `301` | Uncrossable body of water | Lake/body of water polygon. |
 | `meri` | all | `301` | Uncrossable body of water | Sea/water polygon. |
 | `virtavesialue` | all | `301` | Uncrossable body of water | Wide river/stream polygon. |
@@ -99,7 +101,7 @@ data or field interpretation before they can be mapped responsibly:
   `406`/`410` polygons, but thresholds are local and need review
 - uncrossable marsh `307` versus marsh `308`
 - impassable fence/wall symbols
-- boulder size classes and boulder clusters
+- boulder clusters
 - paved area versus private/out-of-bounds area
 - path distinctness and road/track usability
 - final point-cloud cliff classification; the LiDAR pipeline generates candidate `202`

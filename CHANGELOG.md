@@ -1,10 +1,9 @@
 # Changelog
 
-## 0.2.x
+## mml-omap 0.2
 
 ### 0.2.0
 
-- Started the `0.2.0` development version.
 - Replaced the old top-level LiDAR point PNGs with organized
   `lidar-rasters/` support images.
 - Added LaserScan-style LiDAR raster PNGs: median point height, dominant return
@@ -21,9 +20,12 @@
   generation into `src/mml_omap/lidar_rasters.py`.
 - Replaced point-dictionary terrain generation with a continuous
   `GroundModel` used by contours, cliff candidates, and LiDAR rasters.
+- Split self-intersecting generated contours into simple line parts instead of
+  emitting invalid contour LineStrings.
+- Removed closed generated contour rings that enclose less than 10 m2.
 - Shifted the Kotka-Jukola example north and the Vuokatinvaara example south.
 
-## 0.1.x
+## mml-omap 0.1
 
 ### 0.1.9
 

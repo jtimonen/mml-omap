@@ -34,6 +34,7 @@ from mml_omap.cli import (
     render_svg,
     command_symbols,
     contour_features_from_ground_model,
+    clean_contour_lines,
     command_contours_from_xyz,
     cliff_features_from_ground_model,
     ground_grid_from_lidar_points,
@@ -518,6 +519,43 @@ class OrienteeringBoundsTest(unittest.TestCase):
         )
 
         self.assertTrue(any(feature["properties"]["symbol"] == "102" for feature in features))
+
+    def test_contour_cleanup_splits_self_intersections(self) -> None:
+        from shapely.geometry import LineString
+
+        lines = clean_contour_lines(
+            [[0.0, 0.0], [10.0, 10.0], [0.0, 10.0], [10.0, 0.0]],
+            simplify_tolerance_m=0.0,
+        )
+
+        self.assertGreater(len(lines), 1)
+        for line in lines:
+            self.assertGreaterEqual(len(line), 2)
+            self.assertTrue(LineString(line).is_simple)
+
+    def test_contour_cleanup_removes_tiny_closed_rings(self) -> None:
+        lines = clean_contour_lines(
+            [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]],
+            simplify_tolerance_m=0.0,
+            min_closed_area_m2=10.0,
+        )
+
+        self.assertEqual(lines, [])
+
+    def test_contour_cleanup_keeps_large_closed_rings_and_open_lines(self) -> None:
+        large_ring = clean_contour_lines(
+            [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.0, 0.0]],
+            simplify_tolerance_m=0.0,
+            min_closed_area_m2=10.0,
+        )
+        open_line = clean_contour_lines(
+            [[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]],
+            simplify_tolerance_m=0.0,
+            min_closed_area_m2=10.0,
+        )
+
+        self.assertEqual(len(large_ring), 1)
+        self.assertEqual(len(open_line), 1)
 
     def test_lidar_xyz_grid_generates_candidate_cliffs(self) -> None:
         xs = [0.0, 10.0, 20.0]

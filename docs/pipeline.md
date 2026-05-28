@@ -164,9 +164,11 @@ The intentional simplification is only in the mathematical ground model:
 multiple returns become one continuous estimated surface, empty cells are
 interpolated, and the surface is noise-weighted and smoothed before contour
 extraction. The generated contour geometry is taken directly from that
-estimated surface, with a small topology-preserving cleanup to remove numerical
-self-intersections from very detailed isolines. Every `--index-contour-every`
-contour is written as ISOM `102` index contour; the others are ISOM `101`.
+estimated surface. If numerical artifacts make a generated contour
+self-intersect, the crossing is noded and emitted as simple line parts instead
+of one invalid LineString. Closed contour rings enclosing less than 10 m2 are
+discarded as noise. Every `--index-contour-every` contour is written as ISOM
+`102` index contour; the others are ISOM `101`.
 
 ## Cliffs
 

@@ -1350,6 +1350,7 @@ def contour_features_from_ground_model(
         end -= interval_m
     spacing_m = min(grid_spacing(xs), grid_spacing(ys))
     simplify_tolerance_m = max(0.0, min(spacing_m * 0.35, interval_m * 0.08))
+    min_closed_contour_area_m2 = 10.0
     generator = contourpy.contour_generator(
         x=np.asarray(xs, dtype=float),
         y=np.asarray(ys, dtype=float),
@@ -1364,58 +1365,83 @@ def contour_features_from_ground_model(
         render_symbol, iof_number, iof_name = contour_symbol_for_level_index(level_index, index_contour_every)
         for contour_line in generator.lines(level):
             line = [[float(point[0]), float(point[1])] for point in contour_line]
-            line = clean_contour_line(line, simplify_tolerance_m=simplify_tolerance_m)
-            if len(line) < 2:
-                continue
-            features.append(
-                {
-                    "type": "Feature",
-                    "properties": {
-                        "source": "LiDAR-derived elevation grid",
-                        "source_table": "lidar_xyz_grid",
-                        "object_type": "line",
-                        "symbol": iof_number,
-                        "iof_symbol_number": iof_number,
-                        "iof_symbol_name": iof_name,
-                        "render_symbol": render_symbol,
-                        "korkeusarvo": int(round(level * 1000)),
-                    },
-                    "geometry": {"type": "LineString", "coordinates": line},
-                }
-            )
+            for clean_line in clean_contour_lines(
+                line,
+                simplify_tolerance_m=simplify_tolerance_m,
+                min_closed_area_m2=min_closed_contour_area_m2,
+            ):
+                if len(clean_line) < 2:
+                    continue
+                features.append(
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "source": "LiDAR-derived elevation grid",
+                            "source_table": "lidar_xyz_grid",
+                            "object_type": "line",
+                            "symbol": iof_number,
+                            "iof_symbol_number": iof_number,
+                            "iof_symbol_name": iof_name,
+                            "render_symbol": render_symbol,
+                            "korkeusarvo": int(round(level * 1000)),
+                        },
+                        "geometry": {"type": "LineString", "coordinates": clean_line},
+                    }
+                )
         level += interval_m
         level_index += 1
     return features
 
 
-def clean_contour_line(line: list[list[float]], *, simplify_tolerance_m: float) -> list[list[float]]:
-    if len(line) < 2 or simplify_tolerance_m <= 0:
-        return line
+def clean_contour_lines(
+    line: list[list[float]],
+    *,
+    simplify_tolerance_m: float,
+    min_closed_area_m2: float = 0.0,
+) -> list[list[list[float]]]:
+    if len(line) < 2:
+        return []
     try:
-        from shapely.geometry import LineString
+        from shapely.geometry import LineString, Polygon
+        from shapely.ops import linemerge, unary_union
     except ImportError:
-        return line
+        return [line]
+
+    def line_parts(geometry: Any) -> list[Any]:
+        if geometry.is_empty:
+            return []
+        if geometry.geom_type == "LineString":
+            return [geometry]
+        if geometry.geom_type == "MultiLineString":
+            return list(geometry.geoms)
+        if geometry.geom_type == "GeometryCollection":
+            parts = []
+            for item in geometry.geoms:
+                parts.extend(line_parts(item))
+            return parts
+        return []
+
     geometry = LineString(line)
     if geometry.is_empty:
         return []
-    simplified = geometry.simplify(simplify_tolerance_m, preserve_topology=True)
-    if simplified.is_empty:
-        return []
-    if simplified.geom_type == "MultiLineString":
-        geometries = list(simplified.geoms)
-        if not geometries:
-            return []
-        simplified = max(geometries, key=lambda item: item.length)
-    if not simplified.is_simple:
-        simplified = simplified.buffer(simplify_tolerance_m * 0.5).boundary
-        if simplified.geom_type == "MultiLineString":
-            geometries = [geometry for geometry in simplified.geoms if geometry.length > simplify_tolerance_m]
-            if not geometries:
-                return []
-            simplified = max(geometries, key=lambda item: item.length)
-    if simplified.geom_type != "LineString":
-        return line
-    return [[float(x), float(y)] for x, y in simplified.coords]
+    if simplify_tolerance_m > 0:
+        geometry = geometry.simplify(simplify_tolerance_m, preserve_topology=True)
+    cleaned = []
+    for part in line_parts(geometry):
+        candidates = [part]
+        if not part.is_simple:
+            candidates = line_parts(linemerge(unary_union(part)))
+        for candidate in candidates:
+            if candidate.is_empty or not candidate.is_simple:
+                continue
+            if simplify_tolerance_m > 0 and candidate.length < simplify_tolerance_m:
+                continue
+            if min_closed_area_m2 > 0 and candidate.is_ring and Polygon(candidate).area < min_closed_area_m2:
+                continue
+            coords = [[float(x), float(y)] for x, y in candidate.coords]
+            if len(coords) >= 2:
+                cleaned.append(coords)
+    return cleaned
 
 
 def contour_symbol_for_level_index(level_index: int, index_contour_every: int) -> tuple[str, str, str]:

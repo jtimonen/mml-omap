@@ -33,9 +33,9 @@ from mml_omap.cli import (
     render_pdf,
     render_svg,
     command_symbols,
-    contour_features_from_xyz_grid,
+    contour_features_from_ground_model,
     command_contours_from_xyz,
-    cliff_features_from_xyz_grid,
+    cliff_features_from_ground_model,
     ground_grid_from_lidar_points,
     lidar_vegetation_features,
     merge_geojson_documents,
@@ -45,6 +45,7 @@ from mml_omap.cli import (
     validate_orienteering_bbox_size,
 )
 from mml_omap import __version__
+from mml_omap.terrain import GroundModel
 
 
 def setUpModule() -> None:
@@ -493,7 +494,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
             (10.0, 10.0): 10.0,
         }
 
-        features = contour_features_from_xyz_grid(xs, ys, points, interval_m=5.0)
+        features = contour_features_from_ground_model(GroundModel.from_points(xs, ys, points), interval_m=5.0)
 
         self.assertEqual(len(features), 1)
         self.assertEqual(features[0]["properties"]["symbol"], "101")
@@ -510,7 +511,11 @@ class OrienteeringBoundsTest(unittest.TestCase):
             (10.0, 10.0): 30.0,
         }
 
-        features = contour_features_from_xyz_grid(xs, ys, points, interval_m=5.0, index_contour_every=2)
+        features = contour_features_from_ground_model(
+            GroundModel.from_points(xs, ys, points),
+            interval_m=5.0,
+            index_contour_every=2,
+        )
 
         self.assertTrue(any(feature["properties"]["symbol"] == "102" for feature in features))
 
@@ -518,12 +523,16 @@ class OrienteeringBoundsTest(unittest.TestCase):
         xs = [0.0, 10.0, 20.0]
         ys = [0.0, 10.0, 20.0]
         points = {
-            (x, y): (20.0 if x >= 10.0 else 0.0)
+            (x, y): (0.0 if x == 0.0 else 5.0 if x == 10.0 else 20.0)
             for x in xs
             for y in ys
         }
 
-        features = cliff_features_from_xyz_grid(xs, ys, points, slope_threshold_deg=30.0, min_length_m=1.0)
+        features = cliff_features_from_ground_model(
+            GroundModel.from_points(xs, ys, points),
+            slope_threshold_deg=30.0,
+            min_length_m=1.0,
+        )
 
         self.assertTrue(features)
         self.assertEqual(features[0]["properties"]["symbol"], "202")
@@ -619,7 +628,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
             (1.0, 1.0, 11.2, 2),
         ]
 
-        _xs, _ys, _points, report = ground_grid_from_lidar_points(
+        _xs, _ys, _ground_model, report = ground_grid_from_lidar_points(
             rows,
             bbox=[0.0, 0.0, 1.0, 1.0],
             cell_size_m=1.0,
@@ -638,9 +647,7 @@ class OrienteeringBoundsTest(unittest.TestCase):
             source_data = {
                 "bbox": [0.0, 0.0, 2.0, 2.0],
                 "magnetic_declination_deg": 0.0,
-                "xs": xs,
-                "ys": ys,
-                "elevation_points": elevation_points,
+                "ground_model": GroundModel.from_points(xs, ys, elevation_points),
                 "lidar_rows": [
                     (0.2, 0.2, 0.4, 2),
                     (0.2, 0.2, 1.4, 3),
@@ -668,7 +675,6 @@ class OrienteeringBoundsTest(unittest.TestCase):
                 "surface_shading",
                 "surface_slope",
                 "ground_coverage",
-                "point_count_up_to_5m",
                 "vegetation_height",
                 "median_point_height",
                 "return_types",

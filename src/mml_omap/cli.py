@@ -47,6 +47,7 @@ from .lidar import (
     lidar_return_type,
     normalize_lidar_classification,
 )
+from .terrain import GroundModel
 from .symbols import (
     DEFAULT_STYLE,
     IOF_NUMBER_TO_RENDER_SYMBOL,
@@ -1322,10 +1323,8 @@ def stitch_segments(segments: list[tuple[list[float], list[float]]]) -> list[lis
     return [line for line in lines if len(line) >= 2]
 
 
-def contour_features_from_xyz_grid(
-    xs: list[float],
-    ys: list[float],
-    points: dict[tuple[float, float], float],
+def contour_features_from_ground_model(
+    ground_model: GroundModel,
     *,
     interval_m: float,
     min_level: float | None = None,
@@ -1337,7 +1336,10 @@ def contour_features_from_xyz_grid(
 
     if interval_m <= 0:
         raise ValueError("--interval-m must be greater than zero")
-    elevations = list(points.values())
+    xs = [float(value) for value in ground_model.xs]
+    ys = [float(value) for value in ground_model.ys]
+    z = np.asarray(ground_model.sample(xs, ys), dtype=float)
+    elevations = z[np.isfinite(z)]
     min_elevation = min_level if min_level is not None else min(elevations)
     max_elevation = max_level if max_level is not None else max(elevations)
     start = math.ceil(min_elevation / interval_m) * interval_m
@@ -1346,13 +1348,8 @@ def contour_features_from_xyz_grid(
         start += interval_m
     if end >= max_elevation:
         end -= interval_m
-    z = np.empty((len(ys), len(xs)), dtype=float)
-    for y_index, y in enumerate(ys):
-        for x_index, x in enumerate(xs):
-            try:
-                z[y_index, x_index] = points[(x, y)]
-            except KeyError as exc:
-                raise ValueError("XYZ input must be a complete regular grid for contour generation") from exc
+    spacing_m = min(grid_spacing(xs), grid_spacing(ys))
+    simplify_tolerance_m = max(0.0, min(spacing_m * 0.35, interval_m * 0.08))
     generator = contourpy.contour_generator(
         x=np.asarray(xs, dtype=float),
         y=np.asarray(ys, dtype=float),
@@ -1367,6 +1364,7 @@ def contour_features_from_xyz_grid(
         render_symbol, iof_number, iof_name = contour_symbol_for_level_index(level_index, index_contour_every)
         for contour_line in generator.lines(level):
             line = [[float(point[0]), float(point[1])] for point in contour_line]
+            line = clean_contour_line(line, simplify_tolerance_m=simplify_tolerance_m)
             if len(line) < 2:
                 continue
             features.append(
@@ -1388,6 +1386,36 @@ def contour_features_from_xyz_grid(
         level += interval_m
         level_index += 1
     return features
+
+
+def clean_contour_line(line: list[list[float]], *, simplify_tolerance_m: float) -> list[list[float]]:
+    if len(line) < 2 or simplify_tolerance_m <= 0:
+        return line
+    try:
+        from shapely.geometry import LineString
+    except ImportError:
+        return line
+    geometry = LineString(line)
+    if geometry.is_empty:
+        return []
+    simplified = geometry.simplify(simplify_tolerance_m, preserve_topology=True)
+    if simplified.is_empty:
+        return []
+    if simplified.geom_type == "MultiLineString":
+        geometries = list(simplified.geoms)
+        if not geometries:
+            return []
+        simplified = max(geometries, key=lambda item: item.length)
+    if not simplified.is_simple:
+        simplified = simplified.buffer(simplify_tolerance_m * 0.5).boundary
+        if simplified.geom_type == "MultiLineString":
+            geometries = [geometry for geometry in simplified.geoms if geometry.length > simplify_tolerance_m]
+            if not geometries:
+                return []
+            simplified = max(geometries, key=lambda item: item.length)
+    if simplified.geom_type != "LineString":
+        return line
+    return [[float(x), float(y)] for x, y in simplified.coords]
 
 
 def contour_symbol_for_level_index(level_index: int, index_contour_every: int) -> tuple[str, str, str]:
@@ -1425,40 +1453,24 @@ def grid_corner_segments(
     return segments
 
 
-def slope_degrees_from_xyz_grid(
-    xs: list[float],
-    ys: list[float],
-    points: dict[tuple[float, float], float],
-) -> dict[tuple[float, float], float]:
-    dx = grid_spacing(xs)
-    dy = grid_spacing(ys)
-    slopes: dict[tuple[float, float], float] = {}
-    for x_index, x in enumerate(xs):
-        for y_index, y in enumerate(ys):
-            left = xs[max(x_index - 1, 0)]
-            right = xs[min(x_index + 1, len(xs) - 1)]
-            down = ys[max(y_index - 1, 0)]
-            up = ys[min(y_index + 1, len(ys) - 1)]
-            required = [(left, y), (right, y), (x, down), (x, up)]
-            if any(point not in points for point in required):
-                continue
-            local_dx = right - left if right != left else dx
-            local_dy = up - down if up != down else dy
-            dz_dx = (points[(right, y)] - points[(left, y)]) / local_dx
-            dz_dy = (points[(x, up)] - points[(x, down)]) / local_dy
-            slopes[(x, y)] = math.degrees(math.atan(math.hypot(dz_dx, dz_dy)))
-    return slopes
-
-
-def cliff_features_from_xyz_grid(
-    xs: list[float],
-    ys: list[float],
-    points: dict[tuple[float, float], float],
+def cliff_features_from_ground_model(
+    ground_model: GroundModel,
     *,
     slope_threshold_deg: float,
     min_length_m: float,
 ) -> list[dict[str, Any]]:
-    slopes = slope_degrees_from_xyz_grid(xs, ys, points)
+    import numpy as np
+
+    xs = [float(value) for value in ground_model.xs]
+    ys = [float(value) for value in ground_model.ys]
+    x_grid, y_grid = np.meshgrid(np.asarray(xs, dtype=float), np.asarray(ys, dtype=float))
+    dz_dx, dz_dy = ground_model.gradient(x_grid, y_grid)
+    slope_grid = np.degrees(np.arctan(np.hypot(dz_dx, dz_dy)))
+    slopes = {
+        (xs[column], ys[row]): float(slope_grid[row, column])
+        for row in range(len(ys))
+        for column in range(len(xs))
+    }
     lines = stitch_segments(grid_corner_segments(xs, ys, slopes, level=slope_threshold_deg))
     features = []
     for line in lines:
@@ -1695,12 +1707,7 @@ def ground_grid_from_lidar_points(
         weights = gaussian_filter(confidence, sigma=sigma_cells, mode="nearest")
         grid = weighted / np.maximum(weights, 1e-12)
 
-    progress(f"Packaging {columns * rows_count} ground grid cells for contour and raster generation...")
-    points = {
-        (xs[column], ys[row]): float(grid[row, column])
-        for row in range(rows_count)
-        for column in range(columns)
-    }
+    ground_model = GroundModel(xs, ys, grid)
     report = {
         "model": "weighted Gaussian-smoothed regular grid from classified ground points",
         "observation_model": "elevation_observation(x,y) = mu(x,y) + epsilon",
@@ -1727,7 +1734,7 @@ def ground_grid_from_lidar_points(
         f"median cell noise {report['median_cell_noise_estimate_m']:.3f} m, "
         f"p95 fill distance {report['interpolated_cell_distance_p95_m']:.1f} m."
     )
-    return xs, ys, points, report
+    return xs, ys, ground_model, report
 
 
 def nearest_ground_cells(
@@ -3555,7 +3562,7 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
         },
     )
     lidar_rows = read_lidar_point_rows_many(laser_paths)
-    xs, ys, elevation_points, ground_report = ground_grid_from_lidar_points(
+    _xs, _ys, ground_model, ground_report = ground_grid_from_lidar_points(
         lidar_rows,
         bbox=terrain_bbox,
         cell_size_m=args.ground_cell_size_m,
@@ -3572,30 +3579,22 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
         "lidar_rows": lidar_rows,
         "laser_sheets": laser_sheets,
         "laser_paths": [str(path) for path in laser_paths],
-        "xs": xs,
-        "ys": ys,
-        "elevation_points": elevation_points,
+        "ground_model": ground_model,
         "ground_report": ground_report,
     }
 
 
 def combined_map_from_source_data(source_data: dict[str, Any], args: argparse.Namespace, *, interval_m: float) -> tuple[dict[str, Any], dict[str, Any]]:
-    xs = source_data["xs"]
-    ys = source_data["ys"]
-    elevation_points = source_data["elevation_points"]
+    ground_model = source_data["ground_model"]
     progress(f"Generating {interval_m:g} m contours from the ground model...")
-    contour_features = contour_features_from_xyz_grid(
-        xs,
-        ys,
-        elevation_points,
+    contour_features = contour_features_from_ground_model(
+        ground_model,
         interval_m=interval_m,
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
     progress("Generating candidate cliff lines from ground-model slope...")
-    cliff_features = cliff_features_from_xyz_grid(
-        xs,
-        ys,
-        elevation_points,
+    cliff_features = cliff_features_from_ground_model(
+        ground_model,
         slope_threshold_deg=args.slope_threshold_deg,
         min_length_m=args.min_cliff_length_m,
     )
@@ -3926,10 +3925,9 @@ def contour_interval_slug(interval_m: float) -> str:
 
 def command_contours_from_xyz(args: argparse.Namespace) -> int:
     xs, ys, points = read_xyz_grid(Path(args.input))
-    features = contour_features_from_xyz_grid(
-        xs,
-        ys,
-        points,
+    ground_model = GroundModel.from_points(xs, ys, points)
+    features = contour_features_from_ground_model(
+        ground_model,
         interval_m=args.interval_m,
         min_level=args.min_level,
         max_level=args.max_level,
@@ -3962,10 +3960,9 @@ def command_contours_from_xyz(args: argparse.Namespace) -> int:
 
 def command_cliffs_from_xyz(args: argparse.Namespace) -> int:
     xs, ys, points = read_xyz_grid(Path(args.input))
-    features = cliff_features_from_xyz_grid(
-        xs,
-        ys,
-        points,
+    ground_model = GroundModel.from_points(xs, ys, points)
+    features = cliff_features_from_ground_model(
+        ground_model,
         slope_threshold_deg=args.slope_threshold_deg,
         min_length_m=args.min_length_m,
     )
@@ -4016,17 +4013,14 @@ def command_vegetation_from_lidar(args: argparse.Namespace) -> int:
 
 def command_terrain_from_lidar(args: argparse.Namespace) -> int:
     xs, ys, points = read_xyz_grid(Path(args.xyz))
-    contour_features = contour_features_from_xyz_grid(
-        xs,
-        ys,
-        points,
+    ground_model = GroundModel.from_points(xs, ys, points)
+    contour_features = contour_features_from_ground_model(
+        ground_model,
         interval_m=args.interval_m,
         index_contour_every=getattr(args, "index_contour_every", 5),
     )
-    cliff_features = cliff_features_from_xyz_grid(
-        xs,
-        ys,
-        points,
+    cliff_features = cliff_features_from_ground_model(
+        ground_model,
         slope_threshold_deg=args.slope_threshold_deg,
         min_length_m=args.min_cliff_length_m,
     )
@@ -4236,7 +4230,6 @@ def build_parser() -> argparse.ArgumentParser:
     common_example = argparse.ArgumentParser(add_help=False)
     common_example.add_argument(
         "--reuse-downloads",
-        "--use-existing-downloads",
         dest="use_existing_downloads",
         action="store_true",
         help="Use files already present under the example downloads directory instead of contacting MML.",
@@ -4259,7 +4252,6 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--work-dir")
     build.add_argument(
         "--reuse-downloads",
-        "--use-existing-downloads",
         dest="use_existing_downloads",
         action="store_true",
         help="Use files already present in the work/download directory instead of contacting MML.",

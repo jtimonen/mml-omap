@@ -24,3 +24,6 @@
   code paths, or dead code unless the user explicitly asks for compatibility.
   Prefer one current path that uses the best available combined data sources,
   and remove or update stale code and docs in the same change.
+- Never preserve legacy behavior, compatibility aliases, old output formats,
+  duplicate APIs, or transitional wrappers by default. Replace them with the
+  current implementation and delete the stale path in the same change.

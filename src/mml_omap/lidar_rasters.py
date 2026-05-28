@@ -108,62 +108,16 @@ def raster_cell_centers_world(transform: Any, columns: int, rows_count: int) -> 
     return world_x, world_y
 
 
-def grid_array_from_xyz_grid(xs: list[float], ys: list[float], points: dict[tuple[float, float], float]) -> Any:
-    import numpy as np
-
-    return np.asarray([[points[(x, y)] for x in xs] for y in ys], dtype=float)
-
-
-def nearest_grid_values_for_cells(
-    xs: list[float],
-    ys: list[float],
-    grid: Any,
-    transform: Any,
-    *,
-    columns: int,
-    rows_count: int,
-) -> Any:
-    import numpy as np
-
-    center_x_grid, center_y_grid = raster_cell_centers_world(transform, columns, rows_count)
-    center_x = center_x_grid.reshape(-1)
-    center_y = center_y_grid.reshape(-1)
-    xs_array = np.asarray(xs, dtype=float)
-    ys_array = np.asarray(ys, dtype=float)
-    x_indexes = np.searchsorted(xs_array, center_x)
-    y_indexes = np.searchsorted(ys_array, center_y)
-    x_indexes = np.clip(x_indexes, 1, len(xs_array) - 1)
-    y_indexes = np.clip(y_indexes, 1, len(ys_array) - 1)
-    x_indexes = np.where(
-        np.abs(center_x - xs_array[x_indexes - 1]) <= np.abs(center_x - xs_array[x_indexes]),
-        x_indexes - 1,
-        x_indexes,
-    )
-    y_indexes = np.where(
-        np.abs(center_y - ys_array[y_indexes - 1]) <= np.abs(center_y - ys_array[y_indexes]),
-        y_indexes - 1,
-        y_indexes,
-    )
-    return grid[y_indexes, x_indexes].reshape(rows_count, columns)
-
-
 def raster_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str, Any]:
     import numpy as np
 
     from .lidar import LIDAR_GROUND_CLASS, lidar_return_can_count_as_green, normalize_lidar_classification
 
     columns, rows_count = raster_grid_shape(transform)
-    ground_model = nearest_grid_values_for_cells(
-        source_data["xs"],
-        source_data["ys"],
-        grid_array_from_xyz_grid(source_data["xs"], source_data["ys"], source_data["elevation_points"]),
-        transform,
-        columns=columns,
-        rows_count=rows_count,
-    )
+    center_x_grid, center_y_grid = raster_cell_centers_world(transform, columns, rows_count)
+    ground_height = source_data["ground_model"].evaluate(center_x_grid, center_y_grid)
     point_count = np.zeros((rows_count, columns), dtype=np.uint16)
     ground_count = np.zeros((rows_count, columns), dtype=np.uint16)
-    object_count_le5 = np.zeros((rows_count, columns), dtype=np.uint16)
     vegetation_height = np.full((rows_count, columns), np.nan, dtype=float)
     max_observed_z = np.full((rows_count, columns), -np.inf, dtype=float)
 
@@ -193,18 +147,12 @@ def raster_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str, An
             ],
             dtype=int,
         )
-        heights = points[:, 2] - ground_model[row_indices, column_indices]
+        heights = points[:, 2] - ground_height[row_indices, column_indices]
         np.add.at(point_count, (row_indices, column_indices), 1)
         np.maximum.at(max_observed_z, (row_indices, column_indices), points[:, 2])
         is_ground = classifications == LIDAR_GROUND_CLASS
         np.add.at(ground_count, (row_indices[is_ground], column_indices[is_ground]), 1)
         is_object = (~is_ground) & np.isfinite(heights) & (heights >= 0.0)
-        object_rows = row_indices[is_object]
-        object_columns = column_indices[is_object]
-        object_heights = heights[is_object]
-        if len(object_heights):
-            low_object = object_heights <= 5.0
-            np.add.at(object_count_le5, (object_rows[low_object], object_columns[low_object]), 1)
         is_vegetation = np.asarray(
             [lidar_return_can_count_as_green(int(value)) for value in classifications],
             dtype=bool,
@@ -214,15 +162,14 @@ def raster_surfaces(source_data: dict[str, Any], transform: Any) -> dict[str, An
             np.maximum.at(vegetation_seed, (row_indices[is_vegetation], column_indices[is_vegetation]), heights[is_vegetation])
             vegetation_height[:] = np.where(np.isneginf(vegetation_seed), np.nan, vegetation_seed)
 
-    surface_model = np.maximum(ground_model, np.where(np.isneginf(max_observed_z), ground_model, max_observed_z))
+    surface_model = np.maximum(ground_height, np.where(np.isneginf(max_observed_z), ground_height, max_observed_z))
     return {
         "columns": columns,
         "rows": rows_count,
-        "ground_height": ground_model,
+        "ground_height": ground_height,
         "surface_height": surface_model,
         "point_count": point_count,
         "ground_count": ground_count,
-        "object_count_le5": object_count_le5,
         "vegetation_height": vegetation_height,
     }
 
@@ -447,14 +394,18 @@ def render_raster_png(
     draw_pillow_text_fit(draw, (text_x, max(2, plot_top - int(round(4.0 * px_per_mm)))), title, fill=(0, 0, 0, 255), font=title_font, max_width_px=width - text_x - 2)
     draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(5.0 * px_per_mm)))), lidar_footer_text(transform, map_maker), fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
     draw_pillow_text_fit(draw, (text_x, max(2, height - int(round(2.8 * px_per_mm)))), legend, fill=(0, 0, 0, 255), font=footer_font, max_width_px=width - text_x - 2)
+    legend_x = min(width - int(round(35.0 * px_per_mm)), int(metrics["plot_right"]) + int(round(2.5 * px_per_mm)))
+    if legend_x < int(metrics["plot_right"]):
+        legend_x = max(2, int(metrics["plot_left"]) + int(round(1.5 * px_per_mm)))
+    legend_y = int(metrics["plot_top"]) + int(round(2.0 * px_per_mm))
     if color_scale is not None:
         scale_colors, low_label, high_label = color_scale
         bar_width = max(8, int(round(2.5 * px_per_mm)))
         bar_height = min(int(metrics["plot_height"]), max(24, int(round(35.0 * px_per_mm))))
-        bar_x0 = min(width - bar_width - 2, int(metrics["plot_right"]) + int(round(2.5 * px_per_mm)))
+        bar_x0 = min(width - bar_width - 2, legend_x)
         if bar_x0 + bar_width + int(round(12.0 * px_per_mm)) > width:
             bar_x0 = max(2, int(metrics["plot_right"]) - bar_width - int(round(2.0 * px_per_mm)))
-        bar_y0 = int(metrics["plot_top"]) + int(round(2.0 * px_per_mm))
+        bar_y0 = legend_y
         for offset in range(bar_height):
             t = 1.0 - offset / max(bar_height - 1, 1)
             scaled = t * (len(scale_colors) - 1)
@@ -481,6 +432,15 @@ def render_raster_png(
                 draw.rectangle((bar_x0, y, bar_x0 + swatch_size, y + swatch_size), fill=(*color, 255), outline=(0, 0, 0, 255))
                 draw.text((bar_x0 + swatch_size + 5, y), label, fill=(0, 0, 0, 255), font=footer_font)
                 y += swatch_size + int(round(1.5 * px_per_mm))
+    elif swatches:
+        swatch_size = max(8, int(round(2.5 * px_per_mm)))
+        y = legend_y
+        for color, label in swatches:
+            if y + swatch_size >= height:
+                break
+            draw.rectangle((legend_x, y, legend_x + swatch_size, y + swatch_size), fill=(*color, 255), outline=(0, 0, 0, 255))
+            draw.text((legend_x + swatch_size + 5, y), label, fill=(0, 0, 0, 255), font=footer_font)
+            y += swatch_size + int(round(1.5 * px_per_mm))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pil_image.save(output_path)
     return {
@@ -529,6 +489,8 @@ def render_lidar_raster_pngs(source_data: dict[str, Any], output_base: Path, arg
 
     progress("Rendering LiDAR raster: dominant return type...")
     return_type_rgb, return_type_point_counts, return_type_cell_counts = return_type_surface(source_data, transform)
+    from .lidar import LIDAR_RETURN_TYPE_STYLES
+
     return_type_report = render_raster_png(
         return_type_rgb,
         raster_dir / f"{raster_stem}-return-types.png",
@@ -537,6 +499,7 @@ def render_lidar_raster_pngs(source_data: dict[str, Any], output_base: Path, arg
         title=f"{map_title(output_base, args.map_title)} LiDAR return types",
         legend="Dominant LAS return class group per 1 m cell",
         map_maker=args.map_maker,
+        swatches=[(color, label) for label, color in LIDAR_RETURN_TYPE_STYLES.values()],
     )
     return_type_report.update(
         {
@@ -594,19 +557,6 @@ def render_lidar_raster_pngs(source_data: dict[str, Any], output_base: Path, arg
         title=f"{map_title(output_base, args.map_title)} LiDAR ground coverage",
         legend="Blue: no point | yellow: no ground return | black: ground return present",
         map_maker=args.map_maker,
-    )
-
-    progress("Rendering LiDAR raster: object point count up to 5 m...")
-    point_count_rgb, count_max = grayscale_rgb(surfaces["object_count_le5"].astype(float), min_value=0.0)
-    reports["point_count_up_to_5m"] = render_raster_png(
-        point_count_rgb,
-        raster_dir / f"{raster_stem}-point-count-up-to-5m.png",
-        transform=transform,
-        dpi=args.dpi,
-        title=f"{map_title(output_base, args.map_title)} LiDAR object point count",
-        legend=f"Object points up to 5 m above ground, white at >= {count_max:.0f} points/cell",
-        map_maker=args.map_maker,
-        color_scale=grayscale_scale("0", f"{count_max:.0f}"),
     )
 
     progress("Rendering LiDAR raster: vegetation height...")

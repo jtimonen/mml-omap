@@ -104,7 +104,6 @@ The terrain report stores these files under the `lidar_rasters` key:
 | `-surface-shading.png` | Analytical hillshade from the surface model. |
 | `-surface-slope.png` | Surface slope; darker pixels are steeper. |
 | `-ground-coverage.png` | Blue means no point, yellow means points but no ground return, black means ground return present. |
-| `-point-count-up-to-5m.png` | Brighter cells have more non-ground object points up to 5 m above ground. |
 | `-vegetation-height.png` | Maximum vegetation-candidate return height above ground. |
 
 Continuous color rasters include an in-image color-scale legend. These rasters
@@ -147,30 +146,33 @@ local variation. In that case the terrain report uses a conservative 0.15 m
 noise floor. On sparse 0.5 p data with 1 m grid cells, many cells hit that
 fallback, so `global_noise_estimate_m` can remain 0.15 m across builds.
 
-`mu(x, y)` is represented as a regular raster surface. Elevation at arbitrary
-locations inside the map can be evaluated by interpolation on that surface, and
-contours are generated from that estimated surface rather than from raw point
-elevations.
+The smoothed grid is wrapped in a continuous `GroundModel`. `mu(x, y)` is the
+model's spline interpolation function, so elevation and mathematical gradient
+can be evaluated at arbitrary coordinates inside the map frame. The regular
+grid is the observation/support grid, not the public contour-generation data
+structure.
 
 ## Contours
 
-Contours use the point-cloud-derived ground grid. The implementation builds a
-2D elevation matrix and uses `contourpy` to generate isolines at the requested
-contour interval.
+Contours use the point-cloud-derived `GroundModel`. The implementation samples
+the continuous `mu(x, y)` surface on the model grid and uses `contourpy` to
+generate isolines at the requested contour interval. The sampled grid is used
+only as the numerical isoline extraction input; the source of truth for ground
+height is the continuous model.
 
 The intentional simplification is only in the mathematical ground model:
 multiple returns become one continuous estimated surface, empty cells are
 interpolated, and the surface is noise-weighted and smoothed before contour
 extraction. The generated contour geometry is taken directly from that
-estimated surface. No post-contour geometry smoothing, simplification, or
-fragment merging is applied. Every `--index-contour-every` contour is written as
-ISOM `102` index contour; the others are ISOM `101`.
+estimated surface, with a small topology-preserving cleanup to remove numerical
+self-intersections from very detailed isolines. Every `--index-contour-every`
+contour is written as ISOM `102` index contour; the others are ISOM `101`.
 
 ## Cliffs
 
-Cliffs use the same ground grid. The implementation estimates slope at each
-grid point from central height differences in x/y, converts slope to degrees,
-then contours the slope field at `--slope-threshold-deg`.
+Cliffs use the same `GroundModel`. The implementation evaluates the
+mathematical gradient of `mu(x, y)`, converts slope to degrees, then contours
+the slope field at `--slope-threshold-deg`.
 
 Segments shorter than `--min-cliff-length-m` are discarded and the remaining
 lines are written as candidate ISOM `202` cliffs. This is a candidate extractor:

@@ -1,40 +1,45 @@
 # Changelog
 
-## 0.2.0.dev0
+## 0.2.x
+
+### 0.2.0
 
 - Started the `0.2.0` development version.
 - Replaced the old top-level LiDAR point PNGs with organized
   `lidar-rasters/` support images.
 - Added LaserScan-style LiDAR raster PNGs: median point height, dominant return
   type per 1 m cell, ground and surface elevation/shading/slope views, ground
-  coverage, object point count up to 5 m, and vegetation height.
+  coverage and vegetation height.
 - Continuous LiDAR color rasters now include an in-image color-scale legend.
 - Terrain reports now include the new `lidar_rasters` report block.
-- Added `--reuse-downloads` for `build` and the built-in examples, with
-  `--use-existing-downloads` kept as an alias.
+- Added `--reuse-downloads` for `build` and the built-in examples.
 - Added `tools/clean-builds.sh` to remove generated build artifacts while
   preserving downloaded source files under `downloads/`.
 - Mapped MML airfield and runway area tables to ISOM `401` Open land so the
   Kymi airfield example does not render as edge-only linework.
 - Moved LiDAR classification helpers into `src/mml_omap/lidar.py` and raster
   generation into `src/mml_omap/lidar_rasters.py`.
+- Replaced point-dictionary terrain generation with a continuous
+  `GroundModel` used by contours, cliff candidates, and LiDAR rasters.
 - Shifted the Kotka-Jukola example north and the Vuokatinvaara example south.
 
-## 0.1.9
+## 0.1.x
+
+### 0.1.9
 
 - Bumped the package release version to `0.1.9`.
 - Documented that terrain noise estimates use a 0.15 m fallback floor when
   LiDAR ground-cell residuals do not contain enough spread to estimate noise
   from the point cloud itself.
 
-## 0.1.8
+### 0.1.8
 
 - Sports and recreation areas from MML `urheilujavirkistysalue` now render as
   ISOM `401` Open land instead of outline-only/black fallback areas.
 - Reduced the built-in Puijo example bbox to about half its previous area while
   keeping it on A4 at 1:10000.
 
-## 0.1.7
+### 0.1.7
 
 - Added an always-generated `*-lidar-return-types.png` diagnostic image that
   colors LiDAR points by return class group: ground, water, low/medium/high
@@ -44,7 +49,7 @@
 - Terrain reports now include both LiDAR diagnostic image reports.
 - Documented the return class groups and diagnostic colors.
 
-## 0.1.6
+### 0.1.6
 
 - Vegetation extraction now excludes water, building, noise, bridge-deck, and
   high-noise LiDAR classes before counting runnability candidates.
@@ -53,7 +58,7 @@
   height-above-ground checks.
 - Documented the LiDAR class filtering used by vegetation extraction.
 
-## 0.1.5
+### 0.1.5
 
 - Renamed built-in example output stems to match the example names:
   `espoo-keskuspuisto`, `kotka-jukola`, `puijo`, and `vuokatinvaara`.
@@ -62,7 +67,7 @@
 - Removed render-time contour fragment merging so PNG/PDF/SVG outputs use the
   contour geometry directly generated from the elevation model.
 
-## 0.1.4
+### 0.1.4
 
 - Added the generated Espoon keskuspuisto PNG as the README demo image.
 - PNG map outputs now draw the same title, frame, north marker, and footer
@@ -72,7 +77,7 @@
   scale as the actual rendered map, while retaining the version footer and
   viridis height color scale.
 
-## 0.1.3
+### 0.1.3
 
 - Built-in examples render at 1:10000.
 - Contour geometry smoothing is disabled to avoid introducing contour
@@ -90,7 +95,7 @@
   clouds and how the same point cloud is used for ground and vegetation.
 - Added versioning and changelog maintenance instructions for future changes.
 
-## 0.1.2
+### 0.1.2
 
 - Added built-in `ekp` and `kotka-jukola` example builds.
 - Build outputs now use one shared LiDAR point-height diagnostic PNG per source

@@ -25,7 +25,10 @@
 - Removed closed generated contour rings that enclose less than 10 m2.
 - Added `*-mml-lines.pdf` and `*-mml-areas.pdf` raw GeoPackage diagnostics
   labelled by `kohdeluokka`, plus standalone diagnostic commands.
+- Built-in examples now render the MML line and area diagnostic PDFs before
+  starting LiDAR raster support images.
 - Mapped MML `jyrkanne.kohdeluokka=34400` to ISOM `201` Impassable cliff.
+- Mapped MML `autoliikennealue.kohdeluokka=32421` to ISOM `401` Open land.
 - Rendered ISOM `201` cliff tags and oriented MML cliff lines against the
   LiDAR ground model so tags point downhill in full builds.
 - Corrected ISOM `504` Vehicle track to 0.35 mm and `505` Footpath to 0.25 mm

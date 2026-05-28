@@ -59,6 +59,7 @@ Features without an ISOM symbol assignment are skipped by default. With
 | `puisto` | all | `401` | Open land | Open-land proxy; may be wrong for wooded parks. |
 | `lentokenttaalue` | all | `401` | Open land | Airfield area proxy; paved/private access semantics are not inferred. |
 | `lentokentankiitotie` | all | `401` | Open land | Runway area proxy so airfields do not render as outline-only gaps. |
+| `autoliikennealue` | `32421` | `401` | Open land | MML motor-traffic area proxy; paved/private access semantics are not inferred. |
 | `tieviiva` | `12111`, `12112`, `12121`, `12122`, `12131`, `12132` | `502` | Wide road | Mapped as wide road with black edges and brown infill. |
 | `tieviiva` | `12141`, `12142` | `503` | Road | Small driveable road proxy. |
 | `tieviiva` | `12151`, `12152` | none | none | Ferry/lossi transport lines are not rendered as terrain roads. |

@@ -88,6 +88,17 @@ def gpkg_linestring(coordinates: list[tuple[float, float]]) -> bytes:
     return b"GP" + bytes([0, 1]) + struct.pack("<I", 3067) + wkb
 
 
+def gpkg_polygon(ring: list[tuple[float, float]]) -> bytes:
+    wkb = (
+        b"\x01"
+        + struct.pack("<I", 3)
+        + struct.pack("<I", 1)
+        + struct.pack("<I", len(ring))
+        + b"".join(struct.pack("<dd", x, y) for x, y in ring)
+    )
+    return b"GP" + bytes([0, 1]) + struct.pack("<I", 3067) + wkb
+
+
 def make_line_diagnostic_gpkg(path: Path) -> None:
     connection = sqlite3.connect(path)
     connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
@@ -206,6 +217,38 @@ class GeoPackageConversionTest(unittest.TestCase):
         self.assertEqual(feature["properties"]["iof_symbol_number"], "205")
         self.assertEqual(feature["properties"]["iof_symbol_name"], "Large boulder")
 
+    def test_autoliikennealue_32421_maps_to_open_land(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            connection = sqlite3.connect(gpkg)
+            connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+            connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+            connection.execute("INSERT INTO gpkg_contents VALUES ('autoliikennealue', 'features')")
+            connection.execute("INSERT INTO gpkg_geometry_columns VALUES ('autoliikennealue', 'geom')")
+            connection.execute("CREATE TABLE autoliikennealue (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, geom BLOB)")
+            connection.execute(
+                "INSERT INTO autoliikennealue (kohdeluokka, geom) VALUES (?, ?)",
+                (32421, gpkg_polygon([(385395.0, 6672567.0), (385401.0, 6672567.0), (385401.0, 6672573.0), (385395.0, 6672573.0), (385395.0, 6672567.0)])),
+            )
+            connection.commit()
+            connection.close()
+
+            geojson = convert_gpkg_to_geojson(
+                gpkg,
+                bbox=[385395, 6672567, 385401, 6672573],
+                table_rules=DEFAULT_TABLE_RULES,
+                include_unmapped=False,
+            )
+
+        self.assertEqual(len(geojson["features"]), 1)
+        feature = geojson["features"][0]
+        self.assertEqual(feature["properties"]["source_table"], "autoliikennealue")
+        self.assertEqual(feature["properties"]["kohdeluokka"], 32421)
+        self.assertEqual(feature["properties"]["object_type"], "area")
+        self.assertEqual(feature["properties"]["symbol"], "401")
+        self.assertEqual(feature["properties"]["iof_symbol_number"], "401")
+        self.assertEqual(feature["properties"]["iof_symbol_name"], "Open land")
+
     def test_impassable_cliff_svg_renders_tags(self) -> None:
         geojson = {
             "type": "FeatureCollection",
@@ -287,6 +330,9 @@ class GeoPackageConversionTest(unittest.TestCase):
         self.assertIn("(12312)", text)
         self.assertIn("(36312)", text)
         self.assertIn("(44100)", text)
+        self.assertEqual(text.count("(12312)"), 1)
+        self.assertEqual(text.count("(36312)"), 1)
+        self.assertEqual(text.count("(44100)"), 1)
         self.assertNotIn("(52100)", text)
 
     def test_mml_area_diagnostic_reads_downloaded_zip(self) -> None:
@@ -319,6 +365,8 @@ class GeoPackageConversionTest(unittest.TestCase):
         text = pdf.decode("latin-1", "replace")
         self.assertIn("(36200)", text)
         self.assertIn("(99999)", text)
+        self.assertEqual(text.count("(36200)"), 1)
+        self.assertEqual(text.count("(99999)"), 1)
 
     def test_mml_diagnostics_color_only_unmapped_red(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -339,6 +387,47 @@ class GeoPackageConversionTest(unittest.TestCase):
         self.assertEqual(by_class[36312]["diagnostic_color"], (0, 102, 204))
         self.assertFalse(by_class[99999]["diagnostic_mapped"])
         self.assertEqual(by_class[99999]["diagnostic_color"], (204, 0, 0))
+
+    def test_support_reports_render_mml_before_lidar(self) -> None:
+        calls: list[tuple[str, Path]] = []
+        original_line = cli.ensure_mml_line_diagnostic_report
+        original_area = cli.ensure_mml_area_diagnostic_report
+        original_lidar = cli.ensure_lidar_raster_reports
+
+        def fake_line(source_data: dict, output_base: Path, args: argparse.Namespace) -> dict:
+            calls.append(("line", output_base))
+            source_data["mml_line_diagnostic"] = {"path": "line.pdf"}
+            return {"mml_line_diagnostic": source_data["mml_line_diagnostic"]}
+
+        def fake_area(source_data: dict, output_base: Path, args: argparse.Namespace) -> dict:
+            calls.append(("area", output_base))
+            source_data["mml_area_diagnostic"] = {"path": "area.pdf"}
+            return {"mml_area_diagnostic": source_data["mml_area_diagnostic"]}
+
+        def fake_lidar(source_data: dict, output_base: Path, args: argparse.Namespace) -> dict:
+            calls.append(("lidar", output_base))
+            source_data["lidar_rasters"] = {"reports": []}
+            return {"lidar_rasters": source_data["lidar_rasters"]}
+
+        try:
+            cli.ensure_mml_line_diagnostic_report = fake_line
+            cli.ensure_mml_area_diagnostic_report = fake_area
+            cli.ensure_lidar_raster_reports = fake_lidar
+            source_data = {"raster_output": "builds/examples/example/example"}
+            output_base = Path("builds/examples/example/example-1m")
+            report = cli.ensure_support_report_outputs(source_data, output_base, argparse.Namespace())
+        finally:
+            cli.ensure_mml_line_diagnostic_report = original_line
+            cli.ensure_mml_area_diagnostic_report = original_area
+            cli.ensure_lidar_raster_reports = original_lidar
+
+        self.assertEqual([name for name, _ in calls], ["line", "area", "lidar"])
+        self.assertEqual(calls[0][1], output_base)
+        self.assertEqual(calls[1][1], output_base)
+        self.assertEqual(calls[2][1], render_output_base(source_data["raster_output"]))
+        self.assertIn("mml_line_diagnostic", report)
+        self.assertIn("mml_area_diagnostic", report)
+        self.assertIn("lidar_rasters", report)
 
     def test_convert_gpkg_does_not_emit_non_isom_symbols(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

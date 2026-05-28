@@ -8,7 +8,8 @@ terrain modelling, generated features, algorithms, and known gaps.
 The primary build path uses:
 
 - MML `maastotietokanta_bbox` vector data for roads, paths, water, marshes,
-  buildings, fences, rocks, open-land proxies, and other mapped objects.
+  buildings, fences, rocks, motor-traffic/open-land proxies, and other mapped
+  objects.
 - MML `laserkeilausaineisto_05_karttalehti` LAZ point clouds for contours,
   candidate cliffs, and vegetation candidates.
 

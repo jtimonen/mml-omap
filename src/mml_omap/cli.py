@@ -129,6 +129,7 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     "muuavoinalue": {"object_type": "area", "symbol": "field"},
     "puisto": {"object_type": "area", "symbol": "field"},
     "urheilujavirkistysalue": {"object_type": "area", "symbol": "field"},
+    "autoliikennealue": {"object_type": "area", "symbol": "field"},
     "lentokenttaalue": {"object_type": "area", "symbol": "field"},
     "lentokentankiitotie": {"object_type": "area", "symbol": "field"},
     "kallioalue": {"object_type": "area", "symbol": "open_rock"},
@@ -2759,9 +2760,6 @@ def render_mml_line_diagnostic_pdf(
             midpoint = line_midpoint_coordinate(coordinates)
             if midpoint is not None and kohdeluokka:
                 x, y = transform.to_mm(midpoint)
-                commands.append(pdf_color_operator((255, 255, 255), stroke=False))
-                append_pdf_text(commands, x + 0.9, y - 0.9, 7.0, kohdeluokka, transform)
-                commands.append(pdf_color_operator(color, stroke=False))
                 append_pdf_text(commands, x + 0.9, y - 0.9, 6.0, kohdeluokka, transform)
             rendered_parts += 1
     commands.append(pdf_color_operator((221, 221, 221), stroke=True))
@@ -2851,9 +2849,6 @@ def render_mml_area_diagnostic_pdf(
             label_coordinate = polygon_label_coordinate(part)
             if label_coordinate is not None and kohdeluokka:
                 x, y = transform.to_mm(label_coordinate)
-                commands.append(pdf_color_operator((255, 255, 255), stroke=False))
-                append_pdf_text(commands, x + 0.9, y - 0.9, 7.0, kohdeluokka, transform)
-                commands.append(pdf_color_operator(color, stroke=False))
                 append_pdf_text(commands, x + 0.9, y - 0.9, 6.0, kohdeluokka, transform)
             rendered_parts += 1
     commands.append(pdf_color_operator((221, 221, 221), stroke=True))
@@ -4171,12 +4166,7 @@ def build_combined_map(args: argparse.Namespace) -> tuple[dict[str, Any], dict[s
 def command_build(args: argparse.Namespace) -> int:
     output_base = render_output_base(args.output)
     source_data = build_source_data(args)
-    progress("Rendering MML line-symbol diagnostic PDF...")
-    ensure_mml_line_diagnostic_report(source_data, output_base, args)
-    progress("Rendering MML area-symbol diagnostic PDF...")
-    ensure_mml_area_diagnostic_report(source_data, output_base, args)
-    progress("Generating LiDAR raster support images...")
-    ensure_lidar_raster_reports(source_data, output_base, args)
+    ensure_support_report_outputs(source_data, output_base, args)
     progress("Generating combined vector map features...")
     combined, report = combined_map_from_source_data(source_data, args, interval_m=args.interval_m)
     progress("Writing GeoJSON, terrain report, PNG, and PDF outputs...")
@@ -4247,6 +4237,24 @@ def ensure_mml_area_diagnostic_report(source_data: dict[str, Any], output_base: 
     return {"mml_area_diagnostic": existing}
 
 
+def ensure_support_report_outputs(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    report: dict[str, Any] = {}
+    if not isinstance(source_data.get("mml_line_diagnostic"), dict):
+        progress("Rendering MML line-symbol diagnostic PDF...")
+    report.update(ensure_mml_line_diagnostic_report(source_data, output_base, args))
+    if not isinstance(source_data.get("mml_area_diagnostic"), dict):
+        progress("Rendering MML area-symbol diagnostic PDF...")
+    report.update(ensure_mml_area_diagnostic_report(source_data, output_base, args))
+    if not isinstance(source_data.get("lidar_rasters"), dict):
+        progress("Generating LiDAR raster support images...")
+    report.update(ensure_lidar_raster_reports(
+        source_data,
+        render_output_base(source_data.get("raster_output", str(output_base))),
+        args,
+    ))
+    return report
+
+
 def render_build_outputs(
     output_base: Path,
     combined: dict[str, Any],
@@ -4257,13 +4265,7 @@ def render_build_outputs(
 ) -> None:
     geojson_path = output_base.with_suffix(".geojson")
     write_json(geojson_path, combined)
-    report.update(ensure_mml_line_diagnostic_report(source_data, output_base, args))
-    report.update(ensure_mml_area_diagnostic_report(source_data, output_base, args))
-    report.update(ensure_lidar_raster_reports(
-        source_data,
-        render_output_base(source_data["raster_output"]),
-        args,
-    ))
+    report.update(ensure_support_report_outputs(source_data, output_base, args))
     write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
     transform = make_render_transform(
         argparse.Namespace(
@@ -4335,11 +4337,12 @@ def command_ekp(args: argparse.Namespace) -> int:
         use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_raster_reports(source_data, render_output_base(build_args.output), build_args)
+    base_output = render_output_base(build_args.output)
+    ensure_support_report_outputs(source_data, base_output, build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = render_output_base(build_args.output).with_name(
-            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        output_base = base_output.with_name(
+            f"{base_output.name}-{contour_interval_slug(interval_m)}"
         )
         render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0
@@ -4380,11 +4383,12 @@ def command_kotka_jukola(args: argparse.Namespace) -> int:
         use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_raster_reports(source_data, render_output_base(build_args.output), build_args)
+    base_output = render_output_base(build_args.output)
+    ensure_support_report_outputs(source_data, base_output, build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = render_output_base(build_args.output).with_name(
-            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        output_base = base_output.with_name(
+            f"{base_output.name}-{contour_interval_slug(interval_m)}"
         )
         render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0
@@ -4425,11 +4429,12 @@ def command_puijo(args: argparse.Namespace) -> int:
         use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_raster_reports(source_data, render_output_base(build_args.output), build_args)
+    base_output = render_output_base(build_args.output)
+    ensure_support_report_outputs(source_data, base_output, build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = render_output_base(build_args.output).with_name(
-            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        output_base = base_output.with_name(
+            f"{base_output.name}-{contour_interval_slug(interval_m)}"
         )
         render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0
@@ -4470,11 +4475,12 @@ def command_vuokatinvaara(args: argparse.Namespace) -> int:
         use_existing_downloads=args.use_existing_downloads,
     )
     source_data = build_source_data(build_args)
-    ensure_lidar_raster_reports(source_data, render_output_base(build_args.output), build_args)
+    base_output = render_output_base(build_args.output)
+    ensure_support_report_outputs(source_data, base_output, build_args)
     for interval_m in (1.0, 2.5, 5.0):
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = render_output_base(build_args.output).with_name(
-            f"{render_output_base(build_args.output).name}-{contour_interval_slug(interval_m)}"
+        output_base = base_output.with_name(
+            f"{base_output.name}-{contour_interval_slug(interval_m)}"
         )
         render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0

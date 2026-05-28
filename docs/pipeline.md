@@ -197,6 +197,9 @@ the slope field at `--slope-threshold-deg`.
 Segments shorter than `--min-cliff-length-m` are discarded and the remaining
 lines are written as candidate ISOM `202` cliffs. This is a candidate extractor:
 final passability, teeth, and cartographic displacement still need review.
+MML `jyrkanne` source cliffs are separate vector features; for those, full
+builds orient the line against the LiDAR ground model before rendering ISOM
+`201` tags so the tags point to the lower side.
 
 ## Vegetation
 

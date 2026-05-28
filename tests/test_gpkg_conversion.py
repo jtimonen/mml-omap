@@ -37,6 +37,7 @@ from mml_omap.cli import (
     command_mml_line_diagnostic,
     contour_features_from_ground_model,
     clean_contour_lines,
+    cliff_tag_segments_mm,
     command_contours_from_xyz,
     cliff_features_from_ground_model,
     ground_grid_from_lidar_points,
@@ -45,6 +46,7 @@ from mml_omap.cli import (
     extract_laser_paths,
     should_render_point_symbol,
     table_rules_with_optional_forest_mask,
+    orient_mml_cliff_lines_downhill,
     validate_orienteering_bbox_size,
 )
 from mml_omap import __version__
@@ -134,6 +136,83 @@ class GeoPackageConversionTest(unittest.TestCase):
         self.assertEqual(feature["properties"]["object_type"], "line")
         self.assertEqual(feature["properties"]["iof_symbol_number"], "506")
         self.assertEqual(feature["properties"]["iof_symbol_name"], "Small footpath")
+
+    def test_jyrkanne_34400_maps_to_impassable_cliff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            connection = sqlite3.connect(gpkg)
+            connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+            connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+            connection.execute("INSERT INTO gpkg_contents VALUES ('jyrkanne', 'features')")
+            connection.execute("INSERT INTO gpkg_geometry_columns VALUES ('jyrkanne', 'geom')")
+            connection.execute("CREATE TABLE jyrkanne (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, geom BLOB)")
+            connection.execute(
+                "INSERT INTO jyrkanne (kohdeluokka, geom) VALUES (?, ?)",
+                (34400, gpkg_linestring([(385396.0, 6672568.0), (385400.0, 6672572.0)])),
+            )
+            connection.commit()
+            connection.close()
+
+            geojson = convert_gpkg_to_geojson(
+                gpkg,
+                bbox=[385395, 6672567, 385401, 6672573],
+                table_rules=DEFAULT_TABLE_RULES,
+                include_unmapped=False,
+            )
+
+        self.assertEqual(len(geojson["features"]), 1)
+        feature = geojson["features"][0]
+        self.assertEqual(feature["properties"]["symbol"], "201")
+        self.assertEqual(feature["properties"]["iof_symbol_number"], "201")
+        self.assertEqual(feature["properties"]["iof_symbol_name"], "Impassable cliff")
+
+    def test_impassable_cliff_svg_renders_tags(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"symbol": "201", "object_type": "line"},
+                    "geometry": {"type": "LineString", "coordinates": [[0.0, 5.0], [10.0, 5.0]]},
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "cliff.svg"
+            render_svg(geojson, output, transform=RenderTransform([0.0, 0.0, 10.0, 10.0], 1000, 5.0))
+            svg = output.read_text(encoding="utf-8")
+
+        self.assertIn("<line", svg)
+        self.assertGreater(svg.count("stroke-width=\"0.250\""), 1)
+
+    def test_mml_cliff_lines_are_oriented_with_tags_downhill(self) -> None:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "source_table": "jyrkanne",
+                        "symbol": "201",
+                        "iof_symbol_number": "201",
+                        "object_type": "line",
+                    },
+                    "geometry": {"type": "LineString", "coordinates": [[0.0, 5.0], [10.0, 5.0]]},
+                }
+            ],
+        }
+        xs = [0.0, 5.0, 10.0]
+        ys = [0.0, 5.0, 10.0]
+        ground_model = GroundModel.from_points(xs, ys, {(x, y): y for x in xs for y in ys})
+        transform = RenderTransform([0.0, 0.0, 10.0, 10.0], 1000, 5.0)
+
+        orient_mml_cliff_lines_downhill(geojson, ground_model, transform)
+        line = geojson["features"][0]["geometry"]["coordinates"]
+        tags = cliff_tag_segments_mm(line, transform, {"cliff_tags": True})
+
+        self.assertEqual(line, [[10.0, 5.0], [0.0, 5.0]])
+        self.assertTrue(tags)
+        self.assertGreater(tags[0][1][1], tags[0][0][1])
 
     def test_mml_line_diagnostic_reads_downloaded_zip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -379,9 +458,14 @@ class OrienteeringBoundsTest(unittest.TestCase):
 
         self.assertEqual(library["source"]["standard"], "ISOM 2017-2 Revision 6")
         self.assertIn("Do not import GPL/proprietary", library["source"]["asset_policy"])
+        self.assertEqual(library["symbols"]["impassable_cliff"]["iof_symbol_number"], "201")
         self.assertEqual(library["symbols"]["major_road"]["iof_symbol_number"], "502")
         self.assertEqual(library["symbols"]["major_road"]["geometry"], "line")
         self.assertEqual(library["symbols"]["major_road"]["style"]["inner_stroke"], "#b68a57")
+        self.assertEqual(library["symbols"]["road"]["style"]["stroke_width_mm"], 0.35)
+        self.assertEqual(library["symbols"]["small_road"]["style"]["stroke_width_mm"], 0.35)
+        self.assertEqual(library["symbols"]["path"]["style"]["stroke_width_mm"], 0.25)
+        self.assertEqual(library["symbols"]["small_path"]["style"]["stroke_width_mm"], 0.18)
 
     def test_svg_render_uses_iof_like_water_marsh_field_and_road_symbols(self) -> None:
         geojson = {

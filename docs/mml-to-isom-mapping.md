@@ -40,7 +40,8 @@ Features without an ISOM symbol assignment are skipped by default. With
 
 | MML table | MML `kohdeluokka` | ISOM symbol | ISOM name | Notes |
 | --- | --- | --- | --- | --- |
-| `jyrkanne` | all | `202` | Cliff | MML cliff line. Impassable/passable distinction is not inferred yet. |
+| `jyrkanne` | `34400` | `201` | Impassable cliff | MML cliff class mapped as impassable cliff. |
+| `jyrkanne` | other mapped values | `202` | Cliff | Default MML cliff line where passability is not inferred. |
 | `kallioalue` | all | `214` | Bare rock | MML rock area. This is a source-data proxy, not field-checked bare rock. |
 | `kivi` | all | `204` | Boulder | MML point rock. Size classes are not inferred yet. |
 | `jarvi` | all | `301` | Uncrossable body of water | Lake/body of water polygon. |
@@ -101,6 +102,6 @@ data or field interpretation before they can be mapped responsibly:
 - boulder size classes and boulder clusters
 - paved area versus private/out-of-bounds area
 - path distinctness and road/track usability
-- final cliff classification; the LiDAR pipeline generates candidate `202`
+- final point-cloud cliff classification; the LiDAR pipeline generates candidate `202`
   lines from slope bands, but passability and symbol selection still need review
 

@@ -104,7 +104,13 @@ DEFAULT_TABLE_RULES: dict[str, dict[str, Any]] = {
     },
     "rautatie": {"object_type": "line", "symbol": "railway"},
     "aita": {"object_type": "line", "symbol": "fence"},
-    "jyrkanne": {"object_type": "line", "symbol": "cliff"},
+    "jyrkanne": {
+        "object_type": "line",
+        "symbol": "cliff",
+        "kohdeluokka": {
+            "34400": "impassable_cliff",
+        },
+    },
     "virtavesikapea": {
         "object_type": "line",
         "symbol": "stream",
@@ -2144,6 +2150,38 @@ def line_style_layers(style: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def style_has_cliff_tags(style: dict[str, Any]) -> bool:
+    return bool(style.get("cliff_tags"))
+
+
+def cliff_tag_segments_mm(line: list[Any], transform: RenderTransform, style: dict[str, Any]) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    if len(line) < 2:
+        return []
+    spacing = max(float(style.get("cliff_tag_spacing_mm", 1.2)), 0.1)
+    tag_length = max(float(style.get("cliff_tag_length_mm", 0.8)), 0.1)
+    points = [transform.to_mm(coordinate) for coordinate in line]
+    output = []
+    distance_to_next = spacing * 0.5
+    for start, end in zip(points, points[1:]):
+        segment_dx = end[0] - start[0]
+        segment_dy = end[1] - start[1]
+        segment_length = math.hypot(segment_dx, segment_dy)
+        if segment_length <= 0:
+            continue
+        right_x = segment_dy / segment_length
+        right_y = -segment_dx / segment_length
+        walked = 0.0
+        while walked + distance_to_next <= segment_length:
+            walked += distance_to_next
+            t = walked / segment_length
+            base_x = start[0] + segment_dx * t
+            base_y = start[1] + segment_dy * t
+            output.append(((base_x, base_y), (base_x + right_x * tag_length, base_y + right_y * tag_length)))
+            distance_to_next = spacing
+        distance_to_next -= max(segment_length - walked, 0.0)
+    return output
+
+
 def point_radius_mm(style: dict[str, Any]) -> float:
     return float(style.get("point_radius_mm", max(float(style.get("stroke_width_mm", 0.18)) * 2.0, 0.35)))
 
@@ -2488,6 +2526,15 @@ def render_svg(
                         f'stroke-width="{layer_width:.3f}" stroke-linecap="round" '
                         f'stroke-linejoin="round"{dash_attr}/>'
                     )
+                if style_has_cliff_tags(style):
+                    tag_stroke = style.get("stroke", "#000000")
+                    tag_width = float(style.get("cliff_tag_width_mm", style.get("stroke_width_mm", 0.18)))
+                    for start, end in cliff_tag_segments_mm(part.get("coordinates") or [], transform, style):
+                        lines.append(
+                            f'<line x1="{start[0]:.3f}" y1="{start[1]:.3f}" '
+                            f'x2="{end[0]:.3f}" y2="{end[1]:.3f}" '
+                            f'stroke="{tag_stroke}" stroke-width="{tag_width:.3f}" stroke-linecap="round"/>'
+                        )
             elif part["type"] == "Point":
                 x, y = transform.to_mm(part.get("coordinates"))
                 label = feature_label_text(feature)
@@ -2585,6 +2632,65 @@ def mml_line_diagnostic_features_from_gpkg(
                 properties["source_table"] = table
                 features.append({"type": "Feature", "properties": properties, "geometry": geometry})
     return features
+
+
+def screen_delta_to_world_delta(transform: RenderTransform, screen_dx_mm: float, screen_dy_mm: float) -> tuple[float, float]:
+    scale_factor = transform.scale / 1000.0
+    map_x = screen_dx_mm * scale_factor
+    map_y = -screen_dy_mm * scale_factor
+    world_dx = transform._cos_declination * map_x + transform._sin_declination * map_y
+    world_dy = -transform._sin_declination * map_x + transform._cos_declination * map_y
+    return world_dx, world_dy
+
+
+def cliff_line_right_side_height_delta(line: list[Any], ground_model: GroundModel, transform: RenderTransform) -> float:
+    total = 0.0
+    samples = 0
+    for start, end in zip(line, line[1:]):
+        start_mm = transform.to_mm(start)
+        end_mm = transform.to_mm(end)
+        screen_dx = end_mm[0] - start_mm[0]
+        screen_dy = end_mm[1] - start_mm[1]
+        screen_length = math.hypot(screen_dx, screen_dy)
+        if screen_length <= 0:
+            continue
+        right_screen_x = screen_dy / screen_length
+        right_screen_y = -screen_dx / screen_length
+        right_world_x, right_world_y = screen_delta_to_world_delta(transform, right_screen_x, right_screen_y)
+        world_length = math.hypot(right_world_x, right_world_y)
+        if world_length <= 0:
+            continue
+        offset_x = right_world_x / world_length * 1.0
+        offset_y = right_world_y / world_length * 1.0
+        midpoint_x = (float(start[0]) + float(end[0])) * 0.5
+        midpoint_y = (float(start[1]) + float(end[1])) * 0.5
+        right_height = float(ground_model.evaluate(midpoint_x + offset_x, midpoint_y + offset_y))
+        left_height = float(ground_model.evaluate(midpoint_x - offset_x, midpoint_y - offset_y))
+        total += right_height - left_height
+        samples += 1
+    return total / max(samples, 1)
+
+
+def orient_mml_cliff_lines_downhill(geojson: dict[str, Any], ground_model: GroundModel, transform: RenderTransform) -> None:
+    for feature in geojson_features(geojson):
+        properties = feature.get("properties") or {}
+        if properties.get("source_table") != "jyrkanne":
+            continue
+        if feature_symbol(feature) not in {"impassable_cliff", "cliff"}:
+            continue
+        geometry = feature.get("geometry") or {}
+        if geometry.get("type") == "LineString":
+            line = geometry.get("coordinates") or []
+            if cliff_line_right_side_height_delta(line, ground_model, transform) > 0:
+                geometry["coordinates"] = list(reversed(line))
+        elif geometry.get("type") == "MultiLineString":
+            oriented = []
+            for line in geometry.get("coordinates") or []:
+                if cliff_line_right_side_height_delta(line, ground_model, transform) > 0:
+                    oriented.append(list(reversed(line)))
+                else:
+                    oriented.append(line)
+            geometry["coordinates"] = oriented
 
 
 def render_mml_line_diagnostic_svg(
@@ -3032,6 +3138,15 @@ def render_png_with_pillow(
                     dash_pattern = dash_pattern_px(layer.get("dasharray"), px_per_mm)
                     for start, end in dashed_polyline_segments(points, dash_pattern):
                         draw.line([start, end], fill=layer_stroke, width=layer_px)
+                if style_has_cliff_tags(style):
+                    tag_stroke = color_to_rgb(str(style.get("stroke", "#000000"))) or (0, 0, 0)
+                    tag_width = max(1, int(round(float(style.get("cliff_tag_width_mm", style.get("stroke_width_mm", 0.18))) * px_per_mm)))
+                    for start, end in cliff_tag_segments_mm(part.get("coordinates") or [], transform, style):
+                        draw.line(
+                            [(start[0] * px_per_mm, start[1] * px_per_mm), (end[0] * px_per_mm, end[1] * px_per_mm)],
+                            fill=tag_stroke,
+                            width=tag_width,
+                        )
             elif part["type"] == "Point":
                 if feature_label_text(feature):
                     continue
@@ -3166,6 +3281,19 @@ def render_png(
                         layer.get("dasharray"),
                         px_per_mm,
                     )
+                if style_has_cliff_tags(style):
+                    tag_stroke = color_to_rgb(str(style.get("stroke", "#000000"))) or (0, 0, 0)
+                    tag_width = max(1, int(round(float(style.get("cliff_tag_width_mm", style.get("stroke_width_mm", 0.18))) * px_per_mm)))
+                    for start, end in cliff_tag_segments_mm(part.get("coordinates") or [], transform, style):
+                        draw_line(
+                            canvas,
+                            width,
+                            height,
+                            (int(round(start[0] * px_per_mm)), int(round(start[1] * px_per_mm))),
+                            (int(round(end[0] * px_per_mm)), int(round(end[1] * px_per_mm))),
+                            tag_stroke,
+                            tag_width,
+                        )
             elif part["type"] == "Point":
                 if feature_label_text(feature):
                     continue
@@ -3465,6 +3593,18 @@ def render_pdf(
                         x, y = pdf_point(transform, coordinate)
                         commands.append(f"{x:.3f} {y:.3f} l")
                     commands.append("S")
+                if style_has_cliff_tags(style):
+                    tag_stroke = color_to_rgb(str(style.get("stroke", "#000000"))) or (0, 0, 0)
+                    tag_width = float(style.get("cliff_tag_width_mm", style.get("stroke_width_mm", 0.18))) * 72.0 / 25.4
+                    commands.append(pdf_color_operator(tag_stroke, stroke=True))
+                    commands.append(f"{tag_width:.3f} w")
+                    commands.append("[] 0 d")
+                    for start, end in cliff_tag_segments_mm(line, transform, style):
+                        x0, y0 = pdf_mm(start[0], start[1], transform)
+                        x1, y1 = pdf_mm(end[0], end[1], transform)
+                        commands.append(f"{x0:.3f} {y0:.3f} m")
+                        commands.append(f"{x1:.3f} {y1:.3f} l")
+                        commands.append("S")
             elif part["type"] == "Point":
                 if append_pdf_label(commands, feature, part, style, transform):
                     continue
@@ -3786,6 +3926,11 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
         cell_size_m=args.ground_cell_size_m,
         ground_quantile=args.ground_quantile,
         smoothing_sigma_m=args.ground_smoothing_sigma_m,
+    )
+    orient_mml_cliff_lines_downhill(
+        vector_geojson,
+        ground_model,
+        RenderTransform(bbox, args.scale, args.margin_mm, magnetic_declination_deg=magnetic_declination_deg),
     )
     return {
         "bbox": bbox,

@@ -53,6 +53,21 @@ ISOM_SYMBOL_LIBRARY: dict[str, dict[str, Any]] = {
         "render_order": 330,
         "style": {"stroke": "#9b5a28", "stroke_width_mm": 0.14, "fill": "none"},
     },
+    "impassable_cliff": {
+        "iof_symbol_number": "201",
+        "iof_symbol_name": "Impassable cliff",
+        "geometry": "line",
+        "render_order": 450,
+        "style": {
+            "stroke": "#000000",
+            "stroke_width_mm": 0.35,
+            "fill": "none",
+            "cliff_tags": True,
+            "cliff_tag_length_mm": 0.80,
+            "cliff_tag_spacing_mm": 1.20,
+            "cliff_tag_width_mm": 0.25,
+        },
+    },
     "cliff": {
         "iof_symbol_number": "202",
         "iof_symbol_name": "Cliff",
@@ -171,14 +186,14 @@ ISOM_SYMBOL_LIBRARY: dict[str, dict[str, Any]] = {
         "iof_symbol_name": "Vehicle track",
         "geometry": "line",
         "render_order": 410,
-        "style": {"stroke": "#000000", "stroke_width_mm": 0.25, "fill": "none", "dasharray": "3.0 0.75"},
+        "style": {"stroke": "#000000", "stroke_width_mm": 0.35, "fill": "none", "dasharray": "3.0 0.75"},
     },
     "path": {
         "iof_symbol_number": "505",
         "iof_symbol_name": "Footpath",
         "geometry": "line",
         "render_order": 420,
-        "style": {"stroke": "#000000", "stroke_width_mm": 0.18, "fill": "none", "dasharray": "1.5 0.5"},
+        "style": {"stroke": "#000000", "stroke_width_mm": 0.25, "fill": "none", "dasharray": "1.5 0.5"},
     },
     "small_path": {
         "iof_symbol_number": "506",

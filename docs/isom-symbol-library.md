@@ -60,3 +60,11 @@ Generated GeoJSON still uses ISOM symbol numbers in `properties.symbol`; the
 renderer maps those numbers back to the internal render symbol definitions.
 This applies to both MML GeoPackage-derived features and point-cloud-derived
 terrain features.
+
+ISOM `201` Impassable cliff is rendered as a black line with cliff tags. For
+MML `jyrkanne` features in full builds, the line direction is adjusted against
+the LiDAR ground model so the tags point to the lower side of the terrain.
+
+Road and path line widths follow the ISOM minimum graphical widths used by the
+built-in symbol library: `503` Road and `504` Vehicle track are 0.35 mm, `505`
+Footpath is 0.25 mm, and `506` Small footpath is 0.18 mm.

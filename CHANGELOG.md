@@ -25,6 +25,11 @@
 - Removed closed generated contour rings that enclose less than 10 m2.
 - Added `*-mml-lines.svg`, a raw GeoPackage line-object diagnostic labelled by
   `kohdeluokka`, plus the standalone `mml-line-diagnostic` command.
+- Mapped MML `jyrkanne.kohdeluokka=34400` to ISOM `201` Impassable cliff.
+- Rendered ISOM `201` cliff tags and oriented MML cliff lines against the
+  LiDAR ground model so tags point downhill in full builds.
+- Corrected ISOM `504` Vehicle track to 0.35 mm and `505` Footpath to 0.25 mm
+  in the built-in renderer symbol library.
 - Shifted the Kotka-Jukola example north and the Vuokatinvaara example south.
 
 ## mml-omap 0.1

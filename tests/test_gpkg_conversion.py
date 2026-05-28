@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import argparse
 import datetime as dt
+import zipfile
 from pathlib import Path
 
 import mml_omap.cli as cli
@@ -33,6 +34,7 @@ from mml_omap.cli import (
     render_pdf,
     render_svg,
     command_symbols,
+    command_mml_line_diagnostic,
     contour_features_from_ground_model,
     clean_contour_lines,
     command_contours_from_xyz,
@@ -72,6 +74,44 @@ def make_gpkg(path: Path) -> None:
     connection.close()
 
 
+def gpkg_linestring(coordinates: list[tuple[float, float]]) -> bytes:
+    wkb = (
+        b"\x01"
+        + struct.pack("<I", 2)
+        + struct.pack("<I", len(coordinates))
+        + b"".join(struct.pack("<dd", x, y) for x, y in coordinates)
+    )
+    return b"GP" + bytes([0, 1]) + struct.pack("<I", 3067) + wkb
+
+
+def make_line_diagnostic_gpkg(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+    connection.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+    for table in ("tieviiva", "virtavesikapea", "aita", "korkeuskayra"):
+        connection.execute("INSERT INTO gpkg_contents VALUES (?, 'features')", (table,))
+        connection.execute("INSERT INTO gpkg_geometry_columns VALUES (?, 'geom')", (table,))
+        connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, kohdeluokka INTEGER, geom BLOB)")
+    connection.execute(
+        "INSERT INTO tieviiva (kohdeluokka, geom) VALUES (?, ?)",
+        (12312, gpkg_linestring([(0.0, 0.0), (10.0, 0.0)])),
+    )
+    connection.execute(
+        "INSERT INTO virtavesikapea (kohdeluokka, geom) VALUES (?, ?)",
+        (36312, gpkg_linestring([(0.0, 2.0), (10.0, 2.0)])),
+    )
+    connection.execute(
+        "INSERT INTO aita (kohdeluokka, geom) VALUES (?, ?)",
+        (44100, gpkg_linestring([(0.0, 4.0), (10.0, 4.0)])),
+    )
+    connection.execute(
+        "INSERT INTO korkeuskayra (kohdeluokka, geom) VALUES (?, ?)",
+        (52100, gpkg_linestring([(0.0, 6.0), (10.0, 6.0)])),
+    )
+    connection.commit()
+    connection.close()
+
+
 class GeoPackageConversionTest(unittest.TestCase):
     def test_convert_gpkg_to_geojson(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -94,6 +134,42 @@ class GeoPackageConversionTest(unittest.TestCase):
         self.assertEqual(feature["properties"]["object_type"], "line")
         self.assertEqual(feature["properties"]["iof_symbol_number"], "506")
         self.assertEqual(feature["properties"]["iof_symbol_name"], "Small footpath")
+
+    def test_mml_line_diagnostic_reads_downloaded_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gpkg = Path(directory) / "sample.gpkg"
+            archive = Path(directory) / "sample.zip"
+            output = Path(directory) / "lines.svg"
+            make_line_diagnostic_gpkg(gpkg)
+            with zipfile.ZipFile(archive, "w") as zip_file:
+                zip_file.write(gpkg, "sample.gpkg")
+
+            exit_code = command_mml_line_diagnostic(
+                argparse.Namespace(
+                    input=str(archive),
+                    output=str(output),
+                    bbox="0,0,10,8",
+                    scale=1000,
+                    margin_mm=5.0,
+                    map_title=None,
+                    map_maker="mml-omap",
+                    north_line_spacing_m=300.0,
+                    magnetic_declination_deg="0",
+                    magnetic_date=None,
+                )
+            )
+            output_exists = output.exists()
+            svg = output.read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(output_exists)
+        self.assertIn("#000000", svg)
+        self.assertIn("#0066cc", svg)
+        self.assertIn("#cc0000", svg)
+        self.assertIn(">12312<", svg)
+        self.assertIn(">36312<", svg)
+        self.assertIn(">44100<", svg)
+        self.assertNotIn(">52100<", svg)
 
     def test_convert_gpkg_does_not_emit_non_isom_symbols(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

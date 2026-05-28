@@ -23,6 +23,8 @@
 - Split self-intersecting generated contours into simple line parts instead of
   emitting invalid contour LineStrings.
 - Removed closed generated contour rings that enclose less than 10 m2.
+- Added `*-mml-lines.svg`, a raw GeoPackage line-object diagnostic labelled by
+  `kohdeluokka`, plus the standalone `mml-line-diagnostic` command.
 - Shifted the Kotka-Jukola example north and the Vuokatinvaara example south.
 
 ## mml-omap 0.1

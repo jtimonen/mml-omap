@@ -143,6 +143,9 @@ DEFAULT_NORTH_LINE_SPACING_M = 300.0
 DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
 MML_LASER_MAP_SHEET_GRID_M = 3000.0
 DEFAULT_MML_JOB_ATTEMPTS = 3
+MML_LINE_DIAGNOSTIC_WATER_TABLES = {"virtavesikapea"}
+MML_LINE_DIAGNOSTIC_ROAD_TABLES = {"tieviiva"}
+MML_LINE_DIAGNOSTIC_CONTOUR_TABLES = {"korkeuskayra", "korkeuskäyrä", "korkeuskayra_2m", "korkeuskäyrä_2m"}
 
 def read_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as file:
@@ -2518,6 +2521,163 @@ def render_svg(
     progress(f"Wrote SVG to {output_path}.")
 
 
+def mml_line_diagnostic_color(source_table: str) -> str:
+    if source_table in MML_LINE_DIAGNOSTIC_WATER_TABLES:
+        return "#0066cc"
+    if source_table in MML_LINE_DIAGNOSTIC_ROAD_TABLES:
+        return "#000000"
+    return "#cc0000"
+
+
+def is_mml_contour_table(table: str) -> bool:
+    normalized = table.lower().replace("-", "_")
+    return normalized in MML_LINE_DIAGNOSTIC_CONTOUR_TABLES or "korkeuskayra" in normalized or "korkeuskäyrä" in normalized
+
+
+def line_midpoint_coordinate(coordinates: list[list[float]]) -> list[float] | None:
+    if len(coordinates) < 2:
+        return None
+    lengths = []
+    total_length = 0.0
+    for start, end in zip(coordinates, coordinates[1:]):
+        length = math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
+        lengths.append(length)
+        total_length += length
+    if total_length <= 0.0:
+        return [float(coordinates[0][0]), float(coordinates[0][1])]
+    target = total_length * 0.5
+    walked = 0.0
+    for index, length in enumerate(lengths):
+        start = coordinates[index]
+        end = coordinates[index + 1]
+        if walked + length >= target:
+            t = 0.0 if length <= 0.0 else (target - walked) / length
+            return [
+                float(start[0]) + (float(end[0]) - float(start[0])) * t,
+                float(start[1]) + (float(end[1]) - float(start[1])) * t,
+            ]
+        walked += length
+    return [float(coordinates[-1][0]), float(coordinates[-1][1])]
+
+
+def mml_line_diagnostic_features_from_gpkg(
+    gpkg_path: Path,
+    *,
+    bbox: list[float],
+    clip_frame: OrientedFrame,
+) -> list[dict[str, Any]]:
+    features: list[dict[str, Any]] = []
+    with sqlite3.connect(gpkg_path) as connection:
+        connection.row_factory = sqlite3.Row
+        for table, geometry_column in gpkg_feature_tables(connection):
+            if is_mml_contour_table(table):
+                continue
+            for row in feature_rows(connection, table, geometry_column):
+                geometry = parse_gpkg_geometry(row[geometry_column])
+                if geometry is None or geometry["type"] not in {"LineString", "MultiLineString"}:
+                    continue
+                if not geometry_intersects_bbox(geometry, bbox):
+                    continue
+                geometry = clip_geometry_to_frame(geometry, clip_frame)
+                if geometry is None or geometry.get("type") not in {"LineString", "MultiLineString"}:
+                    continue
+                properties = row_properties(row, geometry_column)
+                properties["source_table"] = table
+                features.append({"type": "Feature", "properties": properties, "geometry": geometry})
+    return features
+
+
+def render_mml_line_diagnostic_svg(
+    gpkg_path: Path,
+    output_path: Path,
+    *,
+    transform: RenderTransform,
+    bbox: list[float],
+    magnetic_declination_deg: float,
+    map_title_text: str | None,
+    map_maker: str,
+    north_line_spacing_m: float = DEFAULT_NORTH_LINE_SPACING_M,
+) -> dict[str, Any]:
+    clip_frame = OrientedFrame(bbox, magnetic_declination_deg)
+    features = mml_line_diagnostic_features_from_gpkg(gpkg_path, bbox=enclosing_grid_bbox(bbox, magnetic_declination_deg), clip_frame=clip_frame)
+    progress(f"Rendering MML line diagnostic SVG with {len(features)} GeoPackage line features...")
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="{transform.page_width_mm:.3f}mm" height="{transform.page_height_mm:.3f}mm" '
+            f'viewBox="0 0 {transform.page_width_mm:.3f} {transform.page_height_mm:.3f}">'
+        ),
+        '<rect x="0" y="0" width="100%" height="100%" fill="#ffffff"/>',
+    ]
+    rendered_parts = 0
+    for feature in features:
+        properties = feature.get("properties") or {}
+        source_table = str(properties.get("source_table", ""))
+        color = mml_line_diagnostic_color(source_table)
+        kohdeluokka = html.escape(str(properties.get("kohdeluokka", "")))
+        for part in iter_geometry_parts(feature.get("geometry") or {}):
+            if part["type"] != "LineString":
+                continue
+            coordinates = part.get("coordinates") or []
+            if len(coordinates) < 2:
+                continue
+            path = svg_path_for_line(coordinates, transform)
+            lines.append(
+                f'<path d="{path}" stroke="{color}" fill="none" '
+                f'stroke-width="0.180" stroke-linecap="round" stroke-linejoin="round"/>'
+            )
+            midpoint = line_midpoint_coordinate(coordinates)
+            if midpoint is not None and kohdeluokka:
+                x, y = transform.to_mm(midpoint)
+                lines.append(
+                    f'<text x="{x + 0.9:.3f}" y="{y - 0.9:.3f}" '
+                    f'font-family="Arial, Helvetica, sans-serif" font-size="2.100" '
+                    f'fill="{color}" paint-order="stroke" stroke="#ffffff" '
+                    f'stroke-width="0.450">{kohdeluokka}</text>'
+                )
+            rendered_parts += 1
+    for x in north_line_x_positions(transform, north_line_spacing_m):
+        lines.append(
+            f'<line x1="{x:.3f}" y1="{transform.map_top_mm:.3f}" '
+            f'x2="{x:.3f}" y2="{transform.map_top_mm + transform.map_height_mm:.3f}" '
+            f'stroke="#dddddd" stroke-width="0.120"/>'
+        )
+    lines.append(
+        f'<rect x="{transform.map_left_mm:.3f}" y="{transform.map_top_mm:.3f}" '
+        f'width="{transform.map_width_mm:.3f}" height="{transform.map_height_mm:.3f}" '
+        f'fill="none" stroke="#000000" stroke-width="0.120"/>'
+    )
+    title = html.escape(f"{map_title(output_path, map_title_text)} MML line diagnostic")
+    footer = html.escape(f"mml-omap {__version__} | MML GeoPackage line objects | {map_maker}")
+    lines.append(
+        f'<text x="{transform.map_left_mm:.3f}" y="{max(transform.map_top_mm - 1.2, 3.0):.3f}" '
+        f'font-family="Arial, Helvetica, sans-serif" font-size="3.2" fill="#000000">{title}</text>'
+    )
+    lines.append(
+        f'<text x="{transform.map_left_mm:.3f}" y="{transform.page_height_mm - 1.5:.3f}" '
+        f'font-family="Arial, Helvetica, sans-serif" font-size="2.6" fill="#000000">{footer}</text>'
+    )
+    lines.append(
+        f'<text x="{transform.map_left_mm:.3f}" y="{transform.map_top_mm + transform.map_height_mm + 3.2:.3f}" '
+        f'font-family="Arial, Helvetica, sans-serif" font-size="2.4" fill="#000000">'
+        f'<tspan fill="#0066cc">water</tspan> / <tspan fill="#000000">roads</tspan> / '
+        f'<tspan fill="#cc0000">other line objects</tspan></text>'
+    )
+    lines.append("</svg>")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    progress(f"Wrote MML line diagnostic SVG to {output_path}.")
+    return {
+        "path": str(output_path),
+        "format": "svg",
+        "feature_count": len(features),
+        "line_part_count": rendered_parts,
+        "label": "kohdeluokka",
+        "colors": {"water": "#0066cc", "road": "#000000", "other": "#cc0000"},
+    }
+
+
 def color_to_rgb(raw: str) -> tuple[int, int, int] | None:
     if raw == "none":
         return None
@@ -3480,6 +3640,38 @@ def command_convert_gpkg(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_mml_line_diagnostic(args: argparse.Namespace) -> int:
+    input_path = Path(args.input)
+    if input_path.suffix.lower() != ".zip":
+        raise ValueError("mml-line-diagnostic input must be a downloaded MML .zip file")
+    gpkg_path = extract_first_gpkg(input_path, input_path.with_suffix(""))
+    bbox = parse_orienteering_bbox(args.bbox)
+    magnetic_date = parse_date(args.magnetic_date)
+    magnetic_declination_deg = resolve_magnetic_declination_deg(
+        args.magnetic_declination_deg,
+        bbox=bbox,
+        magnetic_date=magnetic_date.isoformat(),
+    )
+    transform = RenderTransform(
+        bbox,
+        scale=args.scale,
+        margin_mm=args.margin_mm,
+        magnetic_declination_deg=magnetic_declination_deg,
+    )
+    report = render_mml_line_diagnostic_svg(
+        gpkg_path,
+        Path(args.output),
+        transform=transform,
+        bbox=bbox,
+        magnetic_declination_deg=magnetic_declination_deg,
+        map_title_text=args.map_title,
+        map_maker=args.map_maker,
+        north_line_spacing_m=args.north_line_spacing_m,
+    )
+    print(f"Wrote {report['line_part_count']} MML line parts to {report['path']}.")
+    return 0
+
+
 def download_args_for_generate(args: argparse.Namespace, archive_path: Path) -> argparse.Namespace:
     download_vars = vars(args).copy()
     download_vars["output"] = str(archive_path)
@@ -3599,6 +3791,7 @@ def build_source_data(args: argparse.Namespace) -> dict[str, Any]:
         "bbox": bbox,
         "terrain_bbox": terrain_bbox,
         "raster_output": str(output_base),
+        "gpkg_path": str(gpkg_path),
         "magnetic_declination_deg": magnetic_declination_deg,
         "magnetic_date": magnetic_date.isoformat(),
         "vector_geojson": vector_geojson,
@@ -3712,6 +3905,29 @@ def ensure_lidar_raster_reports(source_data: dict[str, Any], output_base: Path, 
     return {"lidar_rasters": existing}
 
 
+def ensure_mml_line_diagnostic_report(source_data: dict[str, Any], output_base: Path, args: argparse.Namespace) -> dict[str, Any]:
+    existing = source_data.get("mml_line_diagnostic")
+    if not isinstance(existing, dict):
+        transform = RenderTransform(
+            source_data["bbox"],
+            args.scale,
+            args.margin_mm,
+            magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
+        )
+        existing = render_mml_line_diagnostic_svg(
+            Path(source_data["gpkg_path"]),
+            output_base.with_name(output_base.name + "-mml-lines").with_suffix(".svg"),
+            transform=transform,
+            bbox=source_data["bbox"],
+            magnetic_declination_deg=float(source_data["magnetic_declination_deg"]),
+            map_title_text=args.map_title,
+            map_maker=args.map_maker,
+            north_line_spacing_m=args.north_line_spacing_m,
+        )
+        source_data["mml_line_diagnostic"] = existing
+    return {"mml_line_diagnostic": existing}
+
+
 def render_build_outputs(
     output_base: Path,
     combined: dict[str, Any],
@@ -3727,6 +3943,7 @@ def render_build_outputs(
         render_output_base(source_data["raster_output"]),
         args,
     ))
+    report.update(ensure_mml_line_diagnostic_report(source_data, output_base, args))
     write_json(output_base.with_name(output_base.name + "-terrain-report").with_suffix(".json"), report)
     transform = make_render_transform(
         argparse.Namespace(
@@ -4367,6 +4584,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Map MML metsamaankasvillisuus polygons to ISOM 406 as a rough green forest proxy.",
     )
     convert.set_defaults(func=command_convert_gpkg)
+
+    line_diagnostic = subparsers.add_parser(
+        "mml-line-diagnostic",
+        help="Render a vector SVG diagnostic of raw MML GeoPackage line objects labelled by kohdeluokka.",
+    )
+    line_diagnostic.add_argument("input", help="Existing downloaded MML zip.")
+    line_diagnostic.add_argument("output", help="Output SVG path.")
+    line_diagnostic.add_argument("--bbox", required=True, help="min_x,min_y,max_x,max_y in EPSG:3067 meters")
+    line_diagnostic.add_argument("--scale", type=int, default=5000)
+    line_diagnostic.add_argument("--margin-mm", type=float, default=5.0)
+    line_diagnostic.add_argument("--map-title", help="Title text printed in SVG layout metadata.")
+    line_diagnostic.add_argument("--map-maker", default="mml-omap", help="Map maker text printed in SVG layout metadata.")
+    line_diagnostic.add_argument("--north-line-spacing-m", type=float, default=DEFAULT_NORTH_LINE_SPACING_M)
+    line_diagnostic.add_argument(
+        "--magnetic-declination-deg",
+        default="auto",
+        help="Magnetic north east of EPSG:3067/grid north in degrees, or auto for estimated KOK.",
+    )
+    line_diagnostic.add_argument("--magnetic-date", help="Date for automatic magnetic declination as YYYY-MM-DD.")
+    line_diagnostic.set_defaults(func=command_mml_line_diagnostic)
 
     generate = subparsers.add_parser(
         "generate",

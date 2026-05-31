@@ -13,6 +13,7 @@ import html
 import json
 import math
 import os
+import re
 import sqlite3
 import ssl
 import struct
@@ -152,6 +153,7 @@ DEFAULT_TERRAIN_CONTEXT_MARGIN_M = 150.0
 MML_LASER_MAP_SHEET_GRID_M = 3000.0
 DEFAULT_MML_JOB_ATTEMPTS = 3
 MML_LINE_DIAGNOSTIC_CONTOUR_TABLES = {"korkeuskayra", "korkeuskäyrä", "korkeuskayra_2m", "korkeuskäyrä_2m"}
+EXAMPLE_CONTOUR_INTERVALS_M = (1.0, 2.5, 5.0)
 
 def read_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as file:
@@ -4302,10 +4304,56 @@ def render_build_outputs(
     print(f"Wrote {geojson_path}, {output_base.with_suffix('.png')}, {output_base.with_suffix('.pdf')}.")
 
 
-def command_ekp(args: argparse.Namespace) -> int:
-    build_args = argparse.Namespace(
-        output="builds/examples/espoo-keskuspuisto/espoo-keskuspuisto",
-        bbox="371255,6673869,373305,6675299",
+def validate_example_name(name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+        raise ValueError("Example name must use only letters, numbers, dots, underscores, or hyphens")
+    if name in {".", ".."}:
+        raise ValueError("Example name cannot be . or ..")
+    return name
+
+
+def parse_latitude_longitude(raw: str) -> tuple[float, float]:
+    parts = [float(part.strip()) for part in raw.split(",")]
+    if len(parts) != 2:
+        raise ValueError("Coordinate must be latitude,longitude in decimal degrees")
+    return parts[0], parts[1]
+
+
+def bbox_from_center_latitude_longitude(
+    raw_center: str,
+    *,
+    width_km: float,
+    height_km: float,
+) -> list[float]:
+    if width_km <= 0 or height_km <= 0:
+        raise ValueError("--width-km and --height-km must be greater than zero")
+    latitude_deg, longitude_deg = parse_latitude_longitude(raw_center)
+    easting, northing = wgs84_to_epsg3067(latitude_deg, longitude_deg)
+    width_m = width_km * 1000.0
+    height_m = height_km * 1000.0
+    bbox = [
+        easting - width_m / 2.0,
+        northing - height_m / 2.0,
+        easting + width_m / 2.0,
+        northing + height_m / 2.0,
+    ]
+    validate_orienteering_bbox_size(bbox)
+    return bbox
+
+
+def example_build_args(
+    args: argparse.Namespace,
+    *,
+    output_name: str,
+    center: str,
+    width_km: float,
+    height_km: float,
+    map_title: str,
+) -> argparse.Namespace:
+    name = validate_example_name(output_name)
+    return argparse.Namespace(
+        output=f"builds/examples/{name}/{name}",
+        bbox=format_bbox(bbox_from_center_latitude_longitude(center, width_km=width_km, height_km=height_km)),
         api_key=args.api_key,
         api_key_env=args.api_key_env,
         base_url=args.base_url,
@@ -4317,7 +4365,7 @@ def command_ekp(args: argparse.Namespace) -> int:
         scale=10000,
         margin_mm=5.0,
         dpi=300,
-        map_title="Espoon keskuspuisto",
+        map_title=map_title,
         map_maker="mml-omap",
         interval_m=2.5,
         index_contour_every=5,
@@ -4336,154 +4384,79 @@ def command_ekp(args: argparse.Namespace) -> int:
         magnetic_date=None,
         use_existing_downloads=args.use_existing_downloads,
     )
+
+
+def run_example_build(build_args: argparse.Namespace) -> int:
     source_data = build_source_data(build_args)
     base_output = render_output_base(build_args.output)
     ensure_support_report_outputs(source_data, base_output, build_args)
-    for interval_m in (1.0, 2.5, 5.0):
+    for interval_m in EXAMPLE_CONTOUR_INTERVALS_M:
         combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
         output_base = base_output.with_name(
             f"{base_output.name}-{contour_interval_slug(interval_m)}"
         )
         render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
     return 0
+
+
+def command_ekp(args: argparse.Namespace) -> int:
+    build_args = example_build_args(
+        args,
+        output_name="espoo-keskuspuisto",
+        center="60.188068,24.696799",
+        width_km=2.05,
+        height_km=1.43,
+        map_title="Espoon keskuspuisto",
+    )
+    return run_example_build(build_args)
 
 
 def command_kotka_jukola(args: argparse.Namespace) -> int:
-    build_args = argparse.Namespace(
-        output="builds/examples/kotka-jukola/kotka-jukola",
-        bbox="492900,6715050,495700,6719150",
-        api_key=args.api_key,
-        api_key_env=args.api_key_env,
-        base_url=args.base_url,
-        poll_seconds=args.poll_seconds,
-        timeout_seconds=args.timeout_seconds,
-        theme="maastotietokanta_kaikki",
-        work_dir=None,
-        mapping=None,
-        scale=10000,
-        margin_mm=5.0,
-        dpi=300,
+    build_args = example_build_args(
+        args,
+        output_name="kotka-jukola",
+        center="60.589770,26.895951",
+        width_km=2.8,
+        height_km=4.1,
         map_title="Kotka-Jukola harjoituskieltoalue",
-        map_maker="mml-omap",
-        interval_m=2.5,
-        index_contour_every=5,
-        ground_cell_size_m=1.0,
-        ground_quantile=0.5,
-        ground_smoothing_sigma_m=1.5,
-        terrain_context_margin_m=DEFAULT_TERRAIN_CONTEXT_MARGIN_M,
-        slope_threshold_deg=38.0,
-        min_cliff_length_m=8.0,
-        cell_size_m=4.0,
-        min_height_m=DEFAULT_GREEN_GROUND_HEIGHT_M,
-        slow_count=DEFAULT_GREEN_MIN_HITS,
-        fight_count=DEFAULT_GREEN_FIGHT_MIN_HITS,
-        north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
-        magnetic_declination_deg="auto",
-        magnetic_date=None,
-        use_existing_downloads=args.use_existing_downloads,
     )
-    source_data = build_source_data(build_args)
-    base_output = render_output_base(build_args.output)
-    ensure_support_report_outputs(source_data, base_output, build_args)
-    for interval_m in (1.0, 2.5, 5.0):
-        combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = base_output.with_name(
-            f"{base_output.name}-{contour_interval_slug(interval_m)}"
-        )
-        render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
-    return 0
+    return run_example_build(build_args)
 
 
 def command_puijo(args: argparse.Namespace) -> int:
-    build_args = argparse.Namespace(
-        output="builds/examples/puijo/puijo",
-        bbox="532615,6974711,534029,6976689",
-        api_key=args.api_key,
-        api_key_env=args.api_key_env,
-        base_url=args.base_url,
-        poll_seconds=args.poll_seconds,
-        timeout_seconds=args.timeout_seconds,
-        theme="maastotietokanta_kaikki",
-        work_dir=None,
-        mapping=None,
-        scale=10000,
-        margin_mm=5.0,
-        dpi=300,
+    build_args = example_build_args(
+        args,
+        output_name="puijo",
+        center="62.909717,27.655838",
+        width_km=1.414,
+        height_km=1.978,
         map_title="Puijo",
-        map_maker="mml-omap",
-        interval_m=2.5,
-        index_contour_every=5,
-        ground_cell_size_m=1.0,
-        ground_quantile=0.5,
-        ground_smoothing_sigma_m=1.5,
-        terrain_context_margin_m=DEFAULT_TERRAIN_CONTEXT_MARGIN_M,
-        slope_threshold_deg=38.0,
-        min_cliff_length_m=8.0,
-        cell_size_m=4.0,
-        min_height_m=DEFAULT_GREEN_GROUND_HEIGHT_M,
-        slow_count=DEFAULT_GREEN_MIN_HITS,
-        fight_count=DEFAULT_GREEN_FIGHT_MIN_HITS,
-        north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
-        magnetic_declination_deg="auto",
-        magnetic_date=None,
-        use_existing_downloads=args.use_existing_downloads,
     )
-    source_data = build_source_data(build_args)
-    base_output = render_output_base(build_args.output)
-    ensure_support_report_outputs(source_data, base_output, build_args)
-    for interval_m in (1.0, 2.5, 5.0):
-        combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = base_output.with_name(
-            f"{base_output.name}-{contour_interval_slug(interval_m)}"
-        )
-        render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
-    return 0
+    return run_example_build(build_args)
 
 
 def command_vuokatinvaara(args: argparse.Namespace) -> int:
-    build_args = argparse.Namespace(
-        output="builds/examples/vuokatinvaara/vuokatinvaara",
-        bbox="560649,7110874,562649,7113674",
-        api_key=args.api_key,
-        api_key_env=args.api_key_env,
-        base_url=args.base_url,
-        poll_seconds=args.poll_seconds,
-        timeout_seconds=args.timeout_seconds,
-        theme="maastotietokanta_kaikki",
-        work_dir=None,
-        mapping=None,
-        scale=10000,
-        margin_mm=5.0,
-        dpi=300,
+    build_args = example_build_args(
+        args,
+        output_name="vuokatinvaara",
+        center="64.131439,28.266418",
+        width_km=2.0,
+        height_km=2.8,
         map_title="Vuokatinvaara",
-        map_maker="mml-omap",
-        interval_m=2.5,
-        index_contour_every=5,
-        ground_cell_size_m=1.0,
-        ground_quantile=0.5,
-        ground_smoothing_sigma_m=1.5,
-        terrain_context_margin_m=DEFAULT_TERRAIN_CONTEXT_MARGIN_M,
-        slope_threshold_deg=38.0,
-        min_cliff_length_m=8.0,
-        cell_size_m=4.0,
-        min_height_m=DEFAULT_GREEN_GROUND_HEIGHT_M,
-        slow_count=DEFAULT_GREEN_MIN_HITS,
-        fight_count=DEFAULT_GREEN_FIGHT_MIN_HITS,
-        north_line_spacing_m=DEFAULT_NORTH_LINE_SPACING_M,
-        magnetic_declination_deg="auto",
-        magnetic_date=None,
-        use_existing_downloads=args.use_existing_downloads,
     )
-    source_data = build_source_data(build_args)
-    base_output = render_output_base(build_args.output)
-    ensure_support_report_outputs(source_data, base_output, build_args)
-    for interval_m in (1.0, 2.5, 5.0):
-        combined, report = combined_map_from_source_data(source_data, build_args, interval_m=interval_m)
-        output_base = base_output.with_name(
-            f"{base_output.name}-{contour_interval_slug(interval_m)}"
-        )
-        render_build_outputs(output_base, combined, report, build_args, source_data=source_data)
-    return 0
+    return run_example_build(build_args)
+
+
+def command_create(args: argparse.Namespace) -> int:
+    build_args = example_build_args(
+        args,
+        output_name=args.name,
+        center=args.center,
+        width_km=args.width_km,
+        height_km=args.height_km,
+        map_title=args.map_title or args.name,
+    )
+    return run_example_build(build_args)
 
 
 def contour_interval_slug(interval_m: float) -> str:
@@ -4803,6 +4776,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use files already present under the example downloads directory instead of contacting MML.",
     )
+
+    create = subparsers.add_parser(
+        "create",
+        parents=[common_api, common_example],
+        help="Create a complete orienteering map from a latitude/longitude center.",
+    )
+    create.add_argument("center", help="Map center as latitude,longitude in decimal degrees.")
+    create.add_argument(
+        "--name",
+        default="custom-map",
+        help="Output name under builds/examples/<name>/; use letters, numbers, dots, underscores, or hyphens.",
+    )
+    create.add_argument("--width-km", type=float, default=1.0, help="Map width in kilometers.")
+    create.add_argument("--height-km", type=float, default=1.0, help="Map height in kilometers.")
+    create.add_argument("--map-title", help="Title printed in map layout metadata. Defaults to name.")
+    create.set_defaults(func=command_create)
 
     build = subparsers.add_parser(
         "build",

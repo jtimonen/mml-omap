@@ -22,10 +22,12 @@ from mml_omap.cli import (
     enclosing_grid_bbox,
     estimate_finland_magnetic_declination_deg,
     estimate_finland_total_correction_deg,
+    example_build_args,
     feature_symbol,
     meridian_convergence_deg,
     geojson_bbox,
     geojson_map_frame_declination,
+    format_bbox,
     infer_contour_interval_m,
     iof_symbol_metadata,
     read_env_file_value,
@@ -39,6 +41,7 @@ from mml_omap.cli import (
     contour_features_from_ground_model,
     clean_contour_lines,
     cliff_tag_segments_mm,
+    bbox_from_center_latitude_longitude,
     command_contours_from_xyz,
     cliff_features_from_ground_model,
     ground_grid_from_lidar_points,
@@ -49,6 +52,7 @@ from mml_omap.cli import (
     should_render_point_symbol,
     table_rules_with_optional_forest_mask,
     orient_mml_cliff_lines_downhill,
+    validate_example_name,
     validate_orienteering_bbox_size,
 )
 from mml_omap import __version__
@@ -138,6 +142,50 @@ def make_line_diagnostic_gpkg(path: Path) -> None:
 
 
 class GeoPackageConversionTest(unittest.TestCase):
+    def test_create_args_match_builtin_example_defaults(self) -> None:
+        args = argparse.Namespace(
+            api_key=None,
+            api_key_env="MML_API_KEY",
+            base_url="https://example.test/ogcproc/v1",
+            poll_seconds=1.0,
+            timeout_seconds=2.0,
+            use_existing_downloads=True,
+        )
+        build_args = example_build_args(
+            args,
+            output_name="my-place",
+            center="60.188068,24.696799",
+            width_km=2.05,
+            height_km=1.43,
+            map_title="My Place",
+        )
+
+        self.assertEqual(build_args.output, "builds/examples/my-place/my-place")
+        self.assertEqual(build_args.bbox, "371255.0,6673869.0,373305.0,6675299.0")
+        self.assertEqual(build_args.scale, 10000)
+        self.assertEqual(build_args.interval_m, 2.5)
+        self.assertEqual(build_args.map_title, "My Place")
+        self.assertEqual(build_args.use_existing_downloads, True)
+
+    def test_create_name_cannot_escape_examples_directory(self) -> None:
+        self.assertEqual(validate_example_name("my-place_1.2"), "my-place_1.2")
+        for name in ("../outside", "/tmp/outside", "nested/path", ""):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    validate_example_name(name)
+
+    def test_create_center_degrees_converts_to_internal_bbox_order(self) -> None:
+        bbox = bbox_from_center_latitude_longitude("60.187226652,24.691807003", width_km=2.0, height_km=1.4)
+
+        self.assertEqual(format_bbox(bbox), "371000.0,6673800.0,373000.0,6675200.0")
+
+    def test_create_parser_defaults_to_one_km_custom_map(self) -> None:
+        args = cli.build_parser().parse_args(["create", "60.187226652,24.691807003"])
+
+        self.assertEqual(args.name, "custom-map")
+        self.assertEqual(args.width_km, 1.0)
+        self.assertEqual(args.height_km, 1.0)
+
     def test_convert_gpkg_to_geojson(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             gpkg = Path(directory) / "sample.gpkg"

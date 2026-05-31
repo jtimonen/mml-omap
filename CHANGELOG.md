@@ -2,6 +2,13 @@
 
 ## mml-omap 0.2
 
+### 0.2.1
+
+- Added `create` as the primary complete-map workflow from a user-provided
+  WGS84 latitude/longitude center and kilometer-sized frame.
+- Shared the built-in example rendering loop so every example-style command
+  renders the same 1 m, 2.5 m, and 5 m contour variants.
+
 ### 0.2.0
 
 - Replaced the old top-level LiDAR point PNGs with organized

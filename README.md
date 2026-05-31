@@ -8,11 +8,18 @@ laser scanning point clouds.
 The normal workflow is one command: download MML topographic vector data,
 download the covering 0.5 p LAZ map sheets, build the terrain model from the
 point cloud, then write GeoJSON, PNG, PDF, LiDAR raster PNGs, and a terrain
-report. Rendered maps use the smallest A5, A4, or A3 portrait/landscape page
-that fits the requested map frame at the requested scale.
+report:
 
-Coordinates are ETRS-TM35FIN / EPSG:3067 meters, matching the native MML file
-service output.
+```sh
+uv run mml-omap create 60.188068,24.696799 --name my-place
+```
+
+Rendered maps use the smallest A5, A4, or A3 portrait/landscape page that fits
+the requested map frame at the requested scale.
+
+The `create` command accepts WGS84 latitude,longitude degrees and converts them
+internally. Lower-level commands use ETRS-TM35FIN / EPSG:3067 meters, matching
+the native MML file service output.
 
 ## Install
 
@@ -67,18 +74,31 @@ Built-in 1:10000 examples write map outputs, terrain reports, LiDAR rasters,
 MML line/area diagnostic PDFs, and downloaded source data under
 `builds/examples/<name>/`.
 
-| Command | Area | EPSG:3067 bbox |
+| Command | Area | Equivalent `create` command |
 | --- | --- | --- |
-| `uv run mml-omap ekp` | Espoon keskuspuisto | `371255,6673869,373305,6675299` |
-| `uv run mml-omap kotka-jukola` | Kymi airfield / Kotka-Jukola training-ban area | `492900,6715050,495700,6719150` |
-| `uv run mml-omap puijo` | Puijo | `532615,6974711,534029,6976689` |
-| `uv run mml-omap vuokatinvaara` | Vuokatinvaara | `560649,7110874,562649,7113674` |
+| `uv run mml-omap ekp` | Espoon keskuspuisto | `uv run mml-omap create 60.188068,24.696799 --name espoo-keskuspuisto --width-km 2.05 --height-km 1.43 --map-title "Espoon keskuspuisto"` |
+| `uv run mml-omap kotka-jukola` | Kymi airfield / Kotka-Jukola training-ban area | `uv run mml-omap create 60.589770,26.895951 --name kotka-jukola --width-km 2.8 --height-km 4.1 --map-title "Kotka-Jukola harjoituskieltoalue"` |
+| `uv run mml-omap puijo` | Puijo | `uv run mml-omap create 62.909717,27.655838 --name puijo --width-km 1.414 --height-km 1.978 --map-title "Puijo"` |
+| `uv run mml-omap vuokatinvaara` | Vuokatinvaara | `uv run mml-omap create 64.131439,28.266418 --name vuokatinvaara --width-km 2.0 --height-km 2.8 --map-title "Vuokatinvaara"` |
+
+Build the same example output set for your own location:
+
+```sh
+uv run mml-omap create 60.188068,24.696799 --name my-place --width-km 2.05 --height-km 1.43 --map-title "My Place"
+```
+
+This writes to `builds/examples/my-place/` and produces the same 1 m, 2.5 m,
+and 5 m contour-interval map variants as the built-in examples. Locations are
+entered as the map-center coordinate in latitude,longitude decimal degrees.
+If omitted, `--name` defaults to `custom-map` and the map frame defaults to
+1 km wide by 1 km high.
 
 Rebuild an example from existing files in its `downloads/` directory without
 contacting MML:
 
 ```sh
 uv run mml-omap ekp --reuse-downloads
+uv run mml-omap create 60.188068,24.696799 --name my-place --reuse-downloads
 ```
 
 Remove generated build artifacts while keeping downloaded source files:
@@ -116,9 +136,11 @@ the final generated features are clipped back to the requested map frame.
 
 ## Coordinate System
 
-`EPSG:3067` is Finland's standard projected map coordinate system,
-`ETRS-TM35FIN`. Coordinates are metric easting/northing values, not
-latitude/longitude degrees.
+`mml-omap create` accepts WGS84 latitude,longitude decimal degrees, the same
+order commonly copied from Google Maps. Internally, and for lower-level
+commands such as `build`, `EPSG:3067` is Finland's standard projected map
+coordinate system, `ETRS-TM35FIN`; those coordinates are metric
+easting/northing values.
 
 `mml-omap` treats the bbox as the intended paper map frame. It expands the MML
 download bbox as needed for magnetic-north rotation, clips output geometry back
